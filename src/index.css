@@ -1,0 +1,175 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Outfit", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --color-bg-primary: var(--bg-primary);
+  --color-bg-secondary: var(--bg-secondary);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-border: var(--border-color);
+}
+
+:root {
+  --bg-primary: #f8fafc;
+  --bg-secondary: #ffffff;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --border-color: #e2e8f0;
+
+  /* Redefine slate colors for LIGHT mode to turn dark elements into crisp modern light design */
+  --color-slate-50: #020617;
+  --color-slate-100: #0f172a;
+  --color-slate-200: #1e293b;
+  --color-slate-300: #334155;
+  --color-slate-400: #475569;
+  --color-slate-500: #64748b;
+  --color-slate-600: #94a3b8;
+  --color-slate-700: #cbd5e1;
+  --color-slate-800: #e2e8f0;
+  --color-slate-850: #f1f5f9;
+  --color-slate-900: #f8fafc;
+  --color-slate-950: #ffffff;
+}
+
+.dark {
+  --bg-primary: #0b0f19;
+  --bg-secondary: #0f172a;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --border-color: #1e293b;
+
+  /* Original Tailwind Slate colors for dark mode */
+  --color-slate-50: #f8fafc;
+  --color-slate-100: #f1f5f9;
+  --color-slate-200: #e2e8f0;
+  --color-slate-300: #cbd5e1;
+  --color-slate-400: #94a3b8;
+  --color-slate-500: #64748b;
+  --color-slate-600: #475569;
+  --color-slate-700: #334155;
+  --color-slate-800: #1e293b;
+  --color-slate-850: #0f172a;
+  --color-slate-900: #0f172a;
+  --color-slate-950: #020617;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  transition: background-color 0.3s, color 0.3s;
+}
+
+/* HIGHLY POLISHED LIGHT MODE CSS REFINEMENTS & ANOMALY RESOLUTIONS */
+html:not(.dark) .bg-slate-950 {
+  background-color: #ffffff !important;
+}
+html:not(.dark) .bg-slate-900 {
+  background-color: #f8fafc !important;
+}
+html:not(.dark) .border-slate-800 {
+  border-color: #e2e8f0 !important;
+}
+html:not(.dark) .text-slate-400 {
+  color: #64748b !important;
+}
+html:not(.dark) .text-slate-300 {
+  color: #334155 !important;
+}
+html:not(.dark) .bg-slate-950\/80 {
+  background-color: rgba(255, 255, 255, 0.85) !important;
+}
+html:not(.dark) .bg-slate-950\/60 {
+  background-color: rgba(255, 255, 255, 0.65) !important;
+}
+html:not(.dark) .bg-slate-950\/50 {
+  background-color: rgba(255, 255, 255, 0.55) !important;
+}
+html:not(.dark) .bg-slate-950\/40 {
+  background-color: rgba(255, 255, 255, 0.45) !important;
+}
+html:not(.dark) .bg-slate-900\/60 {
+  background-color: rgba(241, 245, 249, 0.65) !important;
+}
+html:not(.dark) .bg-slate-900\/40 {
+  background-color: rgba(241, 245, 249, 0.45) !important;
+}
+
+/* Crisp high-contrast overrides for accent labels in Light Mode */
+html:not(.dark) .text-indigo-400,
+html:not(.dark) .text-indigo-300 {
+  color: #4f46e5 !important;
+}
+html:not(.dark) .text-violet-400,
+html:not(.dark) .text-violet-300 {
+  color: #7c3aed !important;
+}
+html:not(.dark) .text-emerald-400,
+html:not(.dark) .text-emerald-300 {
+  color: #059669 !important;
+}
+html:not(.dark) .text-teal-400,
+html:not(.dark) .text-teal-300 {
+  color: #0d9488 !important;
+}
+html:not(.dark) .text-amber-400,
+html:not(.dark) .text-amber-300 {
+  color: #b45309 !important;
+}
+html:not(.dark) .text-rose-400,
+html:not(.dark) .text-rose-300 {
+  color: #dc2626 !important;
+}
+
+/* Exclude colored buttons, gradient headers, and status pills from text-white overrides */
+html:not(.dark) .text-white:not(button):not(button *):not([class*="bg-indigo"]):not([class*="bg-indigo"] *):not([class*="bg-emerald"]):not([class*="bg-emerald"] *):not([class*="bg-rose"]):not([class*="bg-rose"] *):not([class*="bg-violet"]):not([class*="bg-violet"] *):not([class*="bg-gradient"]):not([class*="bg-gradient"] *):not(.bg-teal-500 *):not(.bg-emerald-500 *) {
+  color: #0f172a !important;
+}
+html:not(.dark) .hover\:text-white:hover:not(button):not(button *):not([class*="bg-indigo"]):not([class*="bg-indigo"] *):not([class*="bg-emerald"]):not([class*="bg-emerald"] *):not([class*="bg-rose"]):not([class*="bg-rose"] *):not([class*="bg-violet"]):not([class*="bg-violet"] *) {
+  color: #0f172a !important;
+}
+
+/* Beautiful soft modern shadows in light mode */
+html:not(.dark) .shadow-xl {
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.04), 0 8px 10px -6px rgba(0, 0, 0, 0.03) !important;
+}
+html:not(.dark) .shadow-2xl {
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.06) !important;
+}
+
+html:not(.dark) .placeholder-slate-600::placeholder {
+  color: #94a3b8 !important;
+}
+
+.theme-transitioning,
+.theme-transitioning * {
+  transition: background-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), 
+              border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), 
+              color 0.3s cubic-bezier(0.4, 0, 0.2, 1), 
+              fill 0.3s cubic-bezier(0.4, 0, 0.2, 1), 
+              stroke 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}

@@ -1,0 +1,119 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile with personal and professional details",
+      "type": "object",
+      "properties": {
+        "fullName": {
+          "type": "string",
+          "description": "User's full name"
+        },
+        "phone": {
+          "type": "string",
+          "description": "User's phone number"
+        },
+        "role": {
+          "type": "string",
+          "description": "Job title or role"
+        },
+        "company": {
+          "type": "string",
+          "description": "Company name"
+        },
+        "bio": {
+          "type": "string",
+          "description": "Short biography"
+        },
+        "location": {
+          "type": "string",
+          "description": "User's country/city location"
+        },
+        "avatarId": {
+          "type": "string",
+          "description": "Selected avatar identifier"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of last modification"
+        }
+      },
+      "required": ["fullName", "avatarId"]
+    },
+    "Tenant": {
+      "title": "Tenant",
+      "description": "Enterprise tenant workspace configuration",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "industry": { "type": "string" },
+        "description": { "type": "string" },
+        "accentColor": { "type": "string" },
+        "currency": { "type": "string" },
+        "schemaMappings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sourceField": { "type": "string" },
+              "targetField": { "type": "string" }
+            },
+            "required": ["sourceField", "targetField"]
+          }
+        }
+      },
+      "required": ["name", "industry"]
+    },
+    "TenantData": {
+      "title": "TenantData",
+      "description": "Internal custom sales and CRM records for a tenant",
+      "type": "object",
+      "properties": {
+        "sales": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "crm": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "ChatHistory": {
+      "title": "ChatHistory",
+      "description": "AI Assistant chat logs for user session",
+      "type": "object",
+      "properties": {
+        "messages": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  },
+  "firestore": {
+    "/user_profiles/{email}": {
+      "schema": "UserProfile",
+      "description": "Contains user profiles by email address"
+    },
+    "/tenants/{tenantId}": {
+      "schema": "Tenant",
+      "description": "Contains tenant workspace configurations"
+    },
+    "/tenant_data/{tenantId}": {
+      "schema": "TenantData",
+      "description": "Contains custom CSV upload records (sales and CRM) per tenant"
+    },
+    "/chat_histories/{docId}": {
+      "schema": "ChatHistory",
+      "description": "Contains user conversation histories for the AI interface"
+    }
+  }
+}

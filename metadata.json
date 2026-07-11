@@ -1,0 +1,6 @@
+{
+  "name": "SniperAI V2.1",
+  "description": "Multi-tenant AI sales analytics & predictive forecasting dashboard with interactive smart assistant chat, predictive financial modeling, and executive reports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

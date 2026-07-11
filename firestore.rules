@@ -1,0 +1,57 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default-deny catch-all to secure any other potential collections
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ID Validation Helper
+    function isValidId(id) { 
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-+@\\.]+$'); 
+    }
+
+    // Strict schema and field type validator for UserProfile
+    function isValidUserProfile(data) {
+      return data.fullName is string && data.fullName.size() > 0 && data.fullName.size() <= 256
+        && data.avatarId is string && data.avatarId.size() > 0 && data.avatarId.size() <= 64
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 32))
+        && (!('role' in data) || (data.role is string && data.role.size() <= 128))
+        && (!('company' in data) || (data.company is string && data.company.size() <= 128))
+        && (!('bio' in data) || (data.bio is string && data.bio.size() <= 1000))
+        && (!('location' in data) || (data.location is string && data.location.size() <= 128))
+        && (!('updatedAt' in data) || data.updatedAt is string);
+    }
+
+    // Strict schema and field type validator for Tenant
+    function isValidTenant(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() <= 256
+        && data.industry is string && data.industry.size() > 0 && data.industry.size() <= 256
+        && (!('description' in data) || (data.description is string && data.description.size() <= 1000))
+        && (!('accentColor' in data) || (data.accentColor is string && data.accentColor.size() <= 32))
+        && (!('currency' in data) || (data.currency is string && data.currency.size() <= 16))
+        && (!('schemaMappings' in data) || data.schemaMappings is list);
+    }
+
+    // Specific match block for user profile database
+    match /user_profiles/{email} {
+      allow read: if true;
+      allow create, update: if isValidId(email) && isValidUserProfile(request.resource.data);
+      allow delete: if true;
+    }
+
+    match /tenants/{tenantId} {
+      allow read: if true;
+      allow create, update: if isValidId(tenantId) && isValidTenant(request.resource.data);
+      allow delete: if true;
+    }
+
+    match /tenant_data/{tenantId} {
+      allow read, write: if true;
+    }
+
+    match /chat_histories/{docId} {
+      allow read, write: if true;
+    }
+  }
+}
