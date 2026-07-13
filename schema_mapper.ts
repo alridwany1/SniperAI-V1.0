@@ -46,6 +46,17 @@ export async function mapSchemaWithAI(schema: any) {
         "value": "deal_value",
         "status": "pipeline_status",
         "lastUpdated": "last_updated_at"
+      },
+      "inventory": {
+        "table": "inventory_items",
+        "sku": "sku_code",
+        "productName": "item_name",
+        "stockLevel": "current_stock",
+        "safetyStock": "minimum_safety",
+        "unitCost": "unit_cost",
+        "unitPrice": "unit_price",
+        "supplier": "vendor_name",
+        "lastRestocked": "last_restocked_date"
       }
     };
   }
@@ -53,11 +64,11 @@ export async function mapSchemaWithAI(schema: any) {
   // 2. Try using the Gemini API
   try {
     const prompt = `
-    You are an expert data engineer. We have a dashboard that needs to display Sales and CRM metrics.
+    You are an expert data engineer. We have a dashboard that needs to display Sales, CRM, and Inventory metrics.
     Here is the PostgreSQL database schema provided by the user:
     ${JSON.stringify(schema, null, 2)}
     
-    Map the tables and columns to our required format. Find the most appropriate table for "Sales" and "CRM Deals".
+    Map the tables and columns to our required format. Find the most appropriate table for "Sales", "CRM Deals", and "Inventory Management".
     Return ONLY a valid JSON object matching exactly this structure (use null if no column matches perfectly, but try your best to find a match. Do not wrap in Markdown):
     {
       "sales": {
@@ -76,6 +87,17 @@ export async function mapSchemaWithAI(schema: any) {
         "value": "column_name",
         "status": "column_name",
         "lastUpdated": "column_name"
+      },
+      "inventory": {
+        "table": "table_name",
+        "sku": "column_name",
+        "productName": "column_name",
+        "stockLevel": "column_name",
+        "safetyStock": "column_name",
+        "unitCost": "column_name",
+        "unitPrice": "column_name",
+        "supplier": "column_name",
+        "lastRestocked": "column_name"
       }
     }
     `;
@@ -102,6 +124,7 @@ export async function mapSchemaWithAI(schema: any) {
     // Heuristics to find the best tables
     let salesTable = "";
     let crmTable = "";
+    let inventoryTable = "";
 
     // Score tables for Sales suitability
     const salesScores = tables.map(t => {
@@ -131,12 +154,33 @@ export async function mapSchemaWithAI(schema: any) {
       return { table: t, score };
     }).sort((a, b) => b.score - a.score);
 
+    // Score tables for Inventory suitability
+    const inventoryScores = tables.map(t => {
+      const name = t.toLowerCase();
+      let score = 0;
+      if (name.includes("inventory") || name.includes("stock") || name.includes("warehouse") || name.includes("store") || name.includes("مخزن") || name.includes("مخزون") || name.includes("مستودع") || name.includes("بضاعة") || name.includes("سلع") || name.includes("منتجات") || name.includes("اصناف")) score += 10;
+      if (name.includes("catalog") || name.includes("product") || name.includes("item") || name.includes("صنف") || name.includes("صنف_مخزن")) score += 5;
+      
+      const cols = schema[t].map((c: any) => c.column.toLowerCase());
+      if (cols.some((c: string) => c.includes("sku") || c.includes("code") || c.includes("كود") || c.includes("رمز") || c.includes("رقم_المنتج"))) score += 5;
+      if (cols.some((c: string) => c.includes("stock") || c.includes("qty") || c.includes("quantity") || c.includes("كمية") || c.includes("رصيد"))) score += 3;
+      return { table: t, score };
+    }).sort((a, b) => b.score - a.score);
+
     salesTable = salesScores[0]?.table || tables[0];
+    
     // Avoid mapping same table to both if there are multiple tables
     if (crmScores[0]?.table === salesTable && tables.length > 1) {
       crmTable = crmScores[1]?.table || tables[1];
     } else {
       crmTable = crmScores[0]?.table || tables[0];
+    }
+
+    // Avoid mapping same table to inventory if there are multiple tables
+    if (inventoryScores[0]?.table === salesTable && tables.length > 2) {
+      inventoryTable = inventoryScores.find(it => it.table !== salesTable && it.table !== crmTable)?.table || tables[2];
+    } else {
+      inventoryTable = inventoryScores[0]?.table || tables[0];
     }
 
     // Helper to find closest column by keyword list
@@ -176,6 +220,17 @@ export async function mapSchemaWithAI(schema: any) {
         value: findCol(crmTable, ["deal_value", "value", "amount", "revenue", "worth", "قيمة", "مبلغ", "القيمة", "valor", "valor_contrato"]),
         status: findCol(crmTable, ["pipeline_status", "status", "stage", "state", "حالة", "الحالة", "مرحلة", "estado", "estado_embudo"]),
         lastUpdated: findCol(crmTable, ["last_updated_at", "updated_at", "last_updated", "date", "timestamp", "تحديث", "تاريخ_التحديث", "fecha_actualizacion", "ultima_actualizacion"])
+      },
+      inventory: {
+        table: inventoryTable,
+        sku: findCol(inventoryTable, ["sku", "code", "id", "product_code", "معرف", "رمز", "رقم", "كود", "codigo"]),
+        productName: findCol(inventoryTable, ["product_name", "product", "item", "title", "name", "منتج", "اسم", "سلعة", "صنف", "nombre"]),
+        stockLevel: findCol(inventoryTable, ["stock_level", "stock", "quantity", "qty", "count", "available", "كمية", "مستوى", "رصيد", "موجود", "cantidad"]),
+        safetyStock: findCol(inventoryTable, ["safety_stock", "safety", "min", "minimum", "alert", "حد", "امان", "ادنى", "تنبيه", "minimo"]),
+        unitCost: findCol(inventoryTable, ["unit_cost", "cost", "purchase_price", "شراء", "تكلفة", "سعر_التكلفة", "costo"]),
+        unitPrice: findCol(inventoryTable, ["unit_price", "price", "sale_price", "sell", "بيع", "سعر", "سعر_البيع", "precio"]),
+        supplier: findCol(inventoryTable, ["supplier", "vendor", "source", "manufacturer", "مورد", "شركة", "مصدر", "proveedor"]),
+        lastRestocked: findCol(inventoryTable, ["last_restocked", "date", "time", "update", "restock", "تاريخ", "تحديث", "توريد", "fecha_actualizacion"])
       }
     };
   }
@@ -188,19 +243,21 @@ export async function analyzeAndRouteSchemaWithAI(schema: any, displayLanguage: 
     Our system connects to multiple databases of different schemas, structures, and languages (Arabic, English, Spanish, French, etc.).
     Your task is to automatically detect the table/column semantic definitions, regardless of the language used, and route them to their correct functional slots in our workspace dashboard.
 
-    We have two primary workspace modules:
+    We have three primary workspace modules:
     1. "Sales Ledger": Tracks transactions, product lines, marketing campaigns, and monetary performance.
     2. "CRM Pipeline": Tracks commercial leads, clients, deal value, status, and timeline updates.
+    3. "Inventory Management": Tracks product stock levels, safety thresholds, unit costs, unit prices, supplier names, and last restocked dates.
 
     Here is the database schema provided by the user:
     ${JSON.stringify(schema, null, 2)}
 
     Please analyze the schema and perform the following:
     1. Detect the primary language used in the database.
-    2. Identify which tables correspond to "Sales Ledger" and "CRM Pipeline" (you can choose one table for each. Other tables can be classified as "Unmapped/Auxiliary").
+    2. Identify which tables correspond to "Sales Ledger", "CRM Pipeline", and "Inventory Management" (you can choose one table for each. Other tables can be classified as "Unmapped/Auxiliary").
     3. Within those tables, route each column to its correct slot:
        - For the Sales table, route to slots: "Date", "Product", "Campaign", "Revenue", "Units", "Cost", or "Auxiliary Column" (if it doesn't fit any).
        - For the CRM table, route to slots: "Deal ID", "Client Name", "Deal Value", "Status", "Last Updated", or "Auxiliary Column".
+       - For the Inventory table, route to slots: "SKU", "Product Name", "Stock Level", "Safety Stock", "Unit Cost", "Unit Price", "Supplier", "Last Restocked", or "Auxiliary Column".
     4. Provide a summary explanation (in the user's requested display language: ${displayLanguage === 'ar' ? 'Arabic' : 'English'}) of how you decrypted the terms and mapped them.
 
     Return ONLY a valid JSON object matching exactly this JSON schema (do not wrap in markdown blocks, do not include any text before or after the JSON):
@@ -210,13 +267,13 @@ export async function analyzeAndRouteSchemaWithAI(schema: any, displayLanguage: 
       "tables": [
         {
           "tableName": "string",
-          "mappedTo": "Sales Ledger | CRM Pipeline | Unmapped/Auxiliary",
+          "mappedTo": "Sales Ledger | CRM Pipeline | Inventory Management | Unmapped/Auxiliary",
           "purpose": "string explaining the table's detected role",
           "columns": [
             {
               "columnName": "string",
               "dataType": "string",
-              "mappedTo": "Date | Product | Campaign | Revenue | Units | Cost | Deal ID | Client Name | Deal Value | Status | Last Updated | Auxiliary Column",
+              "mappedTo": "Date | Product | Campaign | Revenue | Units | Cost | Deal ID | Client Name | Deal Value | Status | Last Updated | SKU | Product Name | Stock Level | Safety Stock | Unit Cost | Unit Price | Supplier | Last Restocked | Auxiliary Column",
               "purpose": "string explaining why this column was mapped to this slot"
             }
           ]
@@ -258,7 +315,7 @@ export async function analyzeAndRouteSchemaWithAI(schema: any, displayLanguage: 
 
     for (const tableName of tables) {
       const lowerTable = tableName.toLowerCase();
-      let mappedTo: "Sales Ledger" | "CRM Pipeline" | "Unmapped/Auxiliary" = "Unmapped/Auxiliary";
+      let mappedTo: "Sales Ledger" | "CRM Pipeline" | "Inventory Management" | "Unmapped/Auxiliary" = "Unmapped/Auxiliary";
       let purpose = displayLanguage === 'ar' 
         ? "جدول إضافي في قاعدة البيانات" 
         : "Auxiliary table in database";
@@ -271,6 +328,12 @@ export async function analyzeAndRouteSchemaWithAI(schema: any, displayLanguage: 
                     lowerTable.includes("lead") || lowerTable.includes("opportunity") || lowerTable.includes("customer") ||
                     lowerTable.includes("client") || lowerTable.includes("صفقات") || lowerTable.includes("عملاء") || lowerTable.includes("فرص");
 
+      const isInventory = lowerTable.includes("inventory") || lowerTable.includes("stock") || lowerTable.includes("warehouse") || 
+                          lowerTable.includes("store") || lowerTable.includes("catalog") || lowerTable.includes("product") ||
+                          lowerTable.includes("item") || lowerTable.includes("مخزن") || lowerTable.includes("مخزون") || 
+                          lowerTable.includes("مستودع") || lowerTable.includes("بضاعة") || lowerTable.includes("سلع") || 
+                          lowerTable.includes("منتجات") || lowerTable.includes("اصناف");
+
       if (isSales) {
         mappedTo = "Sales Ledger";
         purpose = displayLanguage === 'ar' 
@@ -281,6 +344,11 @@ export async function analyzeAndRouteSchemaWithAI(schema: any, displayLanguage: 
         purpose = displayLanguage === 'ar' 
           ? "تم التعرف عليه تلقائياً كجدول الصفقات وخط المبيعات للعملاء" 
           : "Automatically detected as CRM Opportunities & Deals pipeline table";
+      } else if (isInventory) {
+        mappedTo = "Inventory Management";
+        purpose = displayLanguage === 'ar'
+          ? "تم التعرف عليه تلقائياً كجدول إدارة المخزون والمستودعات والمنتجات"
+          : "Automatically detected as Inventory, Warehouse & Product stock level table";
       }
 
       const columns: any[] = [];
@@ -331,6 +399,32 @@ export async function analyzeAndRouteSchemaWithAI(schema: any, displayLanguage: 
             colMapped = "Last Updated";
             colPurpose = displayLanguage === 'ar' ? "تاريخ آخر تحديث لحالة الصفقة" : "Timestamp of the last pipeline status change";
           }
+        } else if (mappedTo === "Inventory Management") {
+          if (lowerCol.includes("sku") || lowerCol.includes("code") || lowerCol.includes("id") || lowerCol.includes("معرف") || lowerCol.includes("رمز") || lowerCol.includes("رقم") || lowerCol.includes("كود")) {
+            colMapped = "SKU";
+            colPurpose = displayLanguage === 'ar' ? "رمز المنتج أو معرف SKU الفريد" : "Product SKU or code identifier";
+          } else if (lowerCol.includes("name") || lowerCol.includes("product") || lowerCol.includes("item") || lowerCol.includes("title") || lowerCol.includes("منتج") || lowerCol.includes("اسم") || lowerCol.includes("سلعة") || lowerCol.includes("صنف")) {
+            colMapped = "Product Name";
+            colPurpose = displayLanguage === 'ar' ? "اسم السلعة أو الصنف في المستودع" : "Name of the inventory item";
+          } else if (lowerCol.includes("stock") || lowerCol.includes("level") || lowerCol.includes("qty") || lowerCol.includes("quantity") || lowerCol.includes("count") || lowerCol.includes("available") || lowerCol.includes("كمية") || lowerCol.includes("مستوى") || lowerCol.includes("رصيد") || lowerCol.includes("موجود")) {
+            colMapped = "Stock Level";
+            colPurpose = displayLanguage === 'ar' ? "الكمية الفعلية الموجودة في المخزن" : "Current physical units in stock";
+          } else if (lowerCol.includes("safety") || lowerCol.includes("min") || lowerCol.includes("minimum") || lowerCol.includes("alert") || lowerCol.includes("حد") || lowerCol.includes("امان") || lowerCol.includes("ادنى") || lowerCol.includes("تنبيه")) {
+            colMapped = "Safety Stock";
+            colPurpose = displayLanguage === 'ar' ? "حد الأمان لتنبيه قرب نفاد السلعة" : "Safety stock threshold for low-stock alerts";
+          } else if (lowerCol.includes("cost") || lowerCol.includes("cogs") || lowerCol.includes("purchase") || lowerCol.includes("شراء") || lowerCol.includes("تكلفة") || lowerCol.includes("سعر_التكلفة")) {
+            colMapped = "Unit Cost";
+            colPurpose = displayLanguage === 'ar' ? "سعر الشراء الفعلي للوحدة الواحدة" : "Unit cost of purchase for the item";
+          } else if (lowerCol.includes("price") || lowerCol.includes("sale") || lowerCol.includes("sell") || lowerCol.includes("بيع") || lowerCol.includes("سعر") || lowerCol.includes("سعر_البيع")) {
+            colMapped = "Unit Price";
+            colPurpose = displayLanguage === 'ar' ? "سعر البيع الافتراضي للمستهلك" : "Unit selling price of the item";
+          } else if (lowerCol.includes("supplier") || lowerCol.includes("vendor") || lowerCol.includes("source") || lowerCol.includes("manufacturer") || lowerCol.includes("مورد") || lowerCol.includes("شركة") || lowerCol.includes("مصدر")) {
+            colMapped = "Supplier";
+            colPurpose = displayLanguage === 'ar' ? "اسم الجهة الموردة للمنتج" : "Supplier or vendor of this product";
+          } else if (lowerCol.includes("date") || lowerCol.includes("time") || lowerCol.includes("update") || lowerCol.includes("restock") || lowerCol.includes("تاريخ") || lowerCol.includes("تحديث") || lowerCol.includes("توريد")) {
+            colMapped = "Last Restocked";
+            colPurpose = displayLanguage === 'ar' ? "تاريخ آخر عملية توريد شحنة للمخزن" : "Timestamp of the last stock replenishment";
+          }
         }
 
         columns.push({
@@ -355,13 +449,13 @@ export async function analyzeAndRouteSchemaWithAI(schema: any, displayLanguage: 
       if (isPrepayDepleted) {
         linguisticAnalysis = `تم تشغيل محرك التحليل الإدراكي والتعرف الإرشادي لـ SniperAI بنجاح (وضع عدم الاتصال الآمن). تم تحليل وترميز أسماء الجداول والأعمدة وتوجيهها بدقة عالية إلى لوحة التحكم. [ملاحظة: نوصي بالتحقق من رصيد الشحن في AI Studio لشحن رصيد مفتاح Gemini لتفعيل التحليلات التوليدية المعمقة].`;
       } else {
-        linguisticAnalysis = `تم تشغيل محرك التحليل الإدراكي والتعرف الإرشادي لـ SniperAI بنجاح (وضع عدم الاتصال الآمن). تم تحليل أسماء الجداول والأعمدة وتوجيهها بدقة للوحة التحكم السبرانية.`;
+        linguisticAnalysis = `تم تشغيل محرك التحليل الإدراكي والتعرف الإرشادي لـ SniperAI بنجاح (وضع عدم الاتصال الآمن). تم تحليل أسماء الجداول والأعمدة وتوجيهها بدقة للوحة التحكم السبرانية وبلوغ الجداول كالمبيعات وقمع العلاقات والمخزون.`;
       }
     } else {
       if (isPrepayDepleted) {
         linguisticAnalysis = `The SniperAI Cognitive Rule-Engine is actively mapping your schema (Safe Offline Mode). Columns and tables have been successfully identified and routed. [Recommendation: Check and replenish your Gemini API prepayment credits in AI Studio to enable fully-dynamic generative insights].`;
       } else {
-        linguisticAnalysis = `The SniperAI Cognitive Rule-Engine is actively mapping your schema (Safe Offline Mode). Columns and tables have been successfully identified and routed.`;
+        linguisticAnalysis = `The SniperAI Cognitive Rule-Engine is actively mapping your schema (Safe Offline Mode). Columns and tables (Sales, CRM, and Inventory) have been successfully identified and routed.`;
       }
     }
 

@@ -1,8 +1,9 @@
-import { SalesRecord, CRMDeal } from '../types';
+import { SalesRecord, CRMDeal, InventoryItem } from '../types';
 
 interface ParsedData {
   salesRecords: SalesRecord[];
   crmDeals: CRMDeal[];
+  inventoryItems?: InventoryItem[];
   originalSchema?: any;
 }
 
@@ -10,59 +11,76 @@ interface ParsedData {
  * Normalizes headers to standard keys
  */
 function mapHeaderToKey(header: string): string {
-  const h = header.toLowerCase().trim().replace(/["'`_]/g, '');
+  if (!header) return '';
   
   // Date mappings
-  if (h.includes('date') || h.includes('time') || h.includes('تاريخ') || h.includes('fecha') || h.includes('day') || h.includes('يوم')) {
+  if (matchKeyword(header, ['date', 'time', 'تاريخ', 'fecha', 'day', 'يوم', 'التاريخ'])) {
     return 'date';
   }
   
   // Product mappings
-  if (h.includes('product') || h.includes('item') || h.includes('sku') || h.includes('منتج') || h.includes('سلعة') || h.includes('producto') || h.includes('artículo')) {
+  if (matchKeyword(header, ['product', 'item', 'sku', 'منتج', 'سلعة', 'صنف', 'producto', 'artículo', 'المنتج', 'السلعة'])) {
     return 'product';
   }
   
   // Campaign mappings
-  if (h.includes('campaign') || h.includes('promo') || h.includes('حملة') || h.includes('تسويق') || h.includes('campana') || h.includes('origen')) {
+  if (matchKeyword(header, ['campaign', 'promo', 'حملة', 'تسويق', 'campana', 'origen', 'الحملة', 'التسويق'])) {
     return 'campaign';
   }
   
   // Revenue mappings
-  if (h.includes('revenue') || h.includes('amount') || h.includes('price') || h.includes('total') || h.includes('إيراد') || h.includes('مبلغ') || h.includes('سعر') || h.includes('قيمة') || h.includes('ingresos') || h.includes('monto') || h.includes('venta')) {
+  if (matchKeyword(header, ['revenue', 'amount', 'price', 'total', 'إيراد', 'مبلغ', 'سعر', 'قيمة', 'اجمالي', 'ingresos', 'monto', 'venta', 'الإيراد', 'المبلغ', 'السعر', 'القيمة'])) {
     return 'revenue';
   }
   
   // Units mappings
-  if (h.includes('units') || h.includes('qty') || h.includes('quantity') || h.includes('count') || h.includes('كمية') || h.includes('عدد') || h.includes('unidades') || h.includes('cantidad')) {
+  if (matchKeyword(header, ['units', 'qty', 'quantity', 'count', 'كمية', 'عدد', 'unidades', 'cantidad', 'الكمية', 'العدد'])) {
     return 'units';
   }
   
   // Cost mappings
-  if (h.includes('cost') || h.includes('cogs') || h.includes('expense') || h.includes('تكلفة') || h.includes('مصاريف') || h.includes('costo') || h.includes('gasto')) {
+  if (matchKeyword(header, ['cost', 'cogs', 'expense', 'تكلفة', 'مصاريف', 'costo', 'gasto', 'التكلفة', 'المصاريف'])) {
     return 'cost';
   }
 
   // CRM: Customer Name mappings
-  if (h.includes('customer') || h.includes('client') || h.includes('contact') || h.includes('عميل') || h.includes('اسم_العميل') || h.includes('cliente') || h.includes('nombre') || h.includes('account')) {
+  if (matchKeyword(header, ['customer', 'client', 'contact', 'عميل', 'اسم_العميل', 'اسم العميل', 'cliente', 'nombre', 'account', 'العميل'])) {
     return 'customerName';
   }
 
   // CRM: Value mappings
-  if (h.includes('value') || h.includes('worth') || h.includes('deal_value') || h.includes('قيمة_الصفقة') || h.includes('valor') || h.includes('contrato')) {
+  if (matchKeyword(header, ['value', 'worth', 'deal_value', 'قيمة_الصفقة', 'قيمة الصفقة', 'valor', 'contrato', 'القيمة'])) {
     return 'value';
   }
 
   // CRM: Status mappings
-  if (h.includes('status') || h.includes('stage') || h.includes('state') || h.includes('phase') || h.includes('حالة') || h.includes('مرحلة') || h.includes('estado') || h.includes('etapa')) {
+  if (matchKeyword(header, ['status', 'stage', 'state', 'phase', 'حالة', 'مرحلة', 'estado', 'etapa', 'الحالة', 'المرحلة'])) {
     return 'status';
   }
 
   // CRM: Last Updated mappings
-  if (h.includes('update') || h.includes('last_update') || h.includes('تحديث') || h.includes('تعديل') || h.includes('actualizacion')) {
+  if (matchKeyword(header, ['update', 'last_update', 'تحديث', 'تعديل', 'actualizacion', 'التحديث', 'التعديل'])) {
     return 'lastUpdated';
   }
 
-  return h;
+  // Inventory mappings for key fields
+  if (matchKeyword(header, ['sku', 'code', 'id', 'معرف', 'رمز', 'رقم', 'كود', 'الرمز', 'الرقم', 'الكود'])) {
+    return 'sku';
+  }
+  if (matchKeyword(header, ['stock', 'level', 'qty', 'quantity', 'count', 'available', 'كمية', 'مستوى', 'رصيد', 'موجود', 'الكمية', 'المستوى', 'الرصيد', 'الموجود'])) {
+    return 'stockLevel';
+  }
+  if (matchKeyword(header, ['safety', 'min', 'minimum', 'alert', 'حد', 'امان', 'ادنى', 'تنبيه', 'الحد', 'الامان', 'الادنى', 'التنبيه'])) {
+    return 'safetyStock';
+  }
+  if (matchKeyword(header, ['supplier', 'vendor', 'source', 'manufacturer', 'مورد', 'شركة', 'مصدر', 'المورد', 'الشركة', 'المصدر'])) {
+    return 'supplier';
+  }
+  if (matchKeyword(header, ['price', 'sale_price', 'sell', 'بيع', 'سعر', 'سعر_البيع', 'سعر البيع'])) {
+    return 'unitPrice';
+  }
+
+  return header.toLowerCase().trim().replace(/["'`_]/g, '');
 }
 
 /**
@@ -71,6 +89,7 @@ function mapHeaderToKey(header: string): string {
 function parseJSONContent(text: string): ParsedData {
   const salesRecords: SalesRecord[] = [];
   const crmDeals: CRMDeal[] = [];
+  const inventoryItems: InventoryItem[] = [];
   
   try {
     const raw = JSON.parse(text);
@@ -84,8 +103,31 @@ function parseJSONContent(text: string): ParsedData {
         const keys = Object.keys(item).map(k => ({ original: k, standard: mapHeaderToKey(k) }));
         const hasSalesIndicators = keys.some(k => ['revenue', 'units', 'cost'].includes(k.standard));
         const hasCRMIndicators = keys.some(k => ['customerName', 'status', 'value'].includes(k.standard));
+        const hasInventoryIndicators = keys.some(k => ['stockLevel', 'safetyStock', 'supplier', 'unitPrice'].includes(k.standard));
         
-        if (hasSalesIndicators || !hasCRMIndicators) {
+        if (hasInventoryIndicators) {
+          // Map to InventoryItem
+          const skuKey = keys.find(k => k.standard === 'sku')?.original || '';
+          const nameKey = keys.find(k => k.standard === 'product')?.original || '';
+          const stockKey = keys.find(k => k.standard === 'stockLevel')?.original || '';
+          const safetyKey = keys.find(k => k.standard === 'safetyStock')?.original || '';
+          const costKey = keys.find(k => k.standard === 'cost')?.original || '';
+          const priceKey = keys.find(k => k.standard === 'unitPrice')?.original || '';
+          const supplierKey = keys.find(k => k.standard === 'supplier')?.original || '';
+          const restockedKey = keys.find(k => k.standard === 'date')?.original || '';
+          
+          inventoryItems.push({
+            id: skuKey && item[skuKey] ? String(item[skuKey]) : `inv-json-${idx + 1}`,
+            sku: skuKey && item[skuKey] ? String(item[skuKey]) : `SKU-${idx + 100}`,
+            productName: nameKey && item[nameKey] ? String(item[nameKey]) : 'Unknown Item',
+            stockLevel: stockKey && !isNaN(parseInt(item[stockKey], 10)) ? parseInt(item[stockKey], 10) : 120,
+            safetyStock: safetyKey && !isNaN(parseInt(item[safetyKey], 10)) ? parseInt(item[safetyKey], 10) : 30,
+            unitCost: costKey && !isNaN(parseFloat(item[costKey])) ? parseFloat(item[costKey]) : 0,
+            unitPrice: priceKey && !isNaN(parseFloat(item[priceKey])) ? parseFloat(item[priceKey]) : 0,
+            supplier: supplierKey && item[supplierKey] ? String(item[supplierKey]) : 'Local Supplier',
+            lastRestocked: restockedKey && item[restockedKey] ? String(item[restockedKey]).substring(0, 10) : new Date().toLocaleDateString('en-US')
+          });
+        } else if (hasSalesIndicators || !hasCRMIndicators) {
           // Map to SalesRecord
           const dateKey = keys.find(k => k.standard === 'date')?.original || '';
           const productKey = keys.find(k => k.standard === 'product')?.original || '';
@@ -118,7 +160,7 @@ function parseJSONContent(text: string): ParsedData {
           else if (/lost|خسارة|ملغاة|perdido/i.test(rawStatus)) status = 'Lost';
           else if (/proposal|عرض|تقديم|propuesta/i.test(rawStatus)) status = 'Proposal';
           else if (/qualified|مؤهل|qual/i.test(rawStatus)) status = 'Qualified';
-
+ 
           crmDeals.push({
             id: item[idKey] ? String(item[idKey]) : `deal-${idx + 1}`,
             customerName: item[nameKey] ? String(item[nameKey]) : 'Unknown Client',
@@ -129,7 +171,7 @@ function parseJSONContent(text: string): ParsedData {
         }
       });
     };
-
+ 
     if (Array.isArray(raw)) {
       processArray(raw);
     } else if (typeof raw === 'object' && raw !== null) {
@@ -146,7 +188,7 @@ function parseJSONContent(text: string): ParsedData {
               const revenueKey = keys.find(k => k.standard === 'revenue')?.original || '';
               const unitsKey = keys.find(k => k.standard === 'units')?.original || '';
               const costKey = keys.find(k => k.standard === 'cost')?.original || '';
-
+ 
               tempRecords.push({
                 date: item[dateKey] ? String(item[dateKey]).substring(0, 10) : new Date().toISOString().substring(0, 10),
                 product: item[productKey] ? String(item[productKey]) : 'Standard Product',
@@ -168,14 +210,14 @@ function parseJSONContent(text: string): ParsedData {
               const valueKey = keys.find(k => k.standard === 'value')?.original || '';
               const statusKey = keys.find(k => k.standard === 'status')?.original || '';
               const updatedKey = keys.find(k => k.standard === 'lastUpdated')?.original || '';
-
+ 
               const rawStatus = item[statusKey] ? String(item[statusKey]) : 'Lead';
               let status: CRMDeal['status'] = 'Lead';
               if (/won|فوز|ناجحة|ganado/i.test(rawStatus)) status = 'Won';
               else if (/lost|خسارة|ملغاة|perdido/i.test(rawStatus)) status = 'Lost';
               else if (/proposal|عرض|تقديم|propuesta/i.test(rawStatus)) status = 'Proposal';
               else if (/qualified|مؤهل|qual/i.test(rawStatus)) status = 'Qualified';
-
+ 
               tempDeals.push({
                 id: item[idKey] ? String(item[idKey]) : `deal-${idx + 1}`,
                 customerName: item[nameKey] ? String(item[nameKey]) : 'Unknown Client',
@@ -185,6 +227,32 @@ function parseJSONContent(text: string): ParsedData {
               });
             });
             crmDeals.push(...tempDeals);
+          } else if (key.toLowerCase().includes('inventory') || key.toLowerCase().includes('stock') || key.toLowerCase().includes('warehouse') || key.toLowerCase().includes('store') || key.toLowerCase().includes('catalog') || key.toLowerCase().includes('product') || key.toLowerCase().includes('item') || key.toLowerCase().includes('مخزن') || key.toLowerCase().includes('مخزون') || key.toLowerCase().includes('مستودع') || key.toLowerCase().includes('بضاعة') || key.toLowerCase().includes('منتجات') || key.toLowerCase().includes('اصناف')) {
+            const tempInventory: InventoryItem[] = [];
+            raw[key].forEach((item: any, idx: number) => {
+              const keys = Object.keys(item).map(k => ({ original: k, standard: mapHeaderToKey(k) }));
+              const skuKey = keys.find(k => k.standard === 'sku')?.original || '';
+              const nameKey = keys.find(k => k.standard === 'product')?.original || '';
+              const stockKey = keys.find(k => k.standard === 'stockLevel')?.original || '';
+              const safetyKey = keys.find(k => k.standard === 'safetyStock')?.original || '';
+              const costKey = keys.find(k => k.standard === 'cost')?.original || '';
+              const priceKey = keys.find(k => k.standard === 'unitPrice')?.original || '';
+              const supplierKey = keys.find(k => k.standard === 'supplier')?.original || '';
+              const restockedKey = keys.find(k => k.standard === 'date')?.original || '';
+
+              tempInventory.push({
+                id: skuKey && item[skuKey] ? String(item[skuKey]) : `inv-json-${idx + 1}`,
+                sku: skuKey && item[skuKey] ? String(item[skuKey]) : `SKU-${idx + 100}`,
+                productName: nameKey && item[nameKey] ? String(item[nameKey]) : 'Unknown Item',
+                stockLevel: stockKey && !isNaN(parseInt(item[stockKey], 10)) ? parseInt(item[stockKey], 10) : 120,
+                safetyStock: safetyKey && !isNaN(parseInt(item[safetyKey], 10)) ? parseInt(item[safetyKey], 10) : 30,
+                unitCost: costKey && !isNaN(parseFloat(item[costKey])) ? parseFloat(item[costKey]) : 0,
+                unitPrice: priceKey && !isNaN(parseFloat(item[priceKey])) ? parseFloat(item[priceKey]) : 0,
+                supplier: supplierKey && item[supplierKey] ? String(item[supplierKey]) : 'Local Supplier',
+                lastRestocked: restockedKey && item[restockedKey] ? String(item[restockedKey]).substring(0, 10) : new Date().toLocaleDateString('en-US')
+              });
+            });
+            inventoryItems.push(...tempInventory);
           } else {
             // Process generally
             processArray(raw[key]);
@@ -196,7 +264,7 @@ function parseJSONContent(text: string): ParsedData {
     console.error('Failed to parse JSON file:', e);
   }
   
-  return { salesRecords, crmDeals };
+  return { salesRecords, crmDeals, inventoryItems };
 }
 
 /**
@@ -205,10 +273,11 @@ function parseJSONContent(text: string): ParsedData {
 function parseCSVContent(text: string): ParsedData {
   const salesRecords: SalesRecord[] = [];
   const crmDeals: CRMDeal[] = [];
+  const inventoryItems: InventoryItem[] = [];
   
   try {
     const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
-    if (lines.length <= 1) return { salesRecords, crmDeals };
+    if (lines.length <= 1) return { salesRecords, crmDeals, inventoryItems };
     
     // Detect delimiter
     let delimiter = ',';
@@ -222,7 +291,11 @@ function parseCSVContent(text: string): ParsedData {
     // Detect type of CSV
     const hasSalesIndicators = mappedKeys.some(k => ['revenue', 'units', 'cost'].includes(k));
     const hasCRMIndicators = mappedKeys.some(k => ['customerName', 'status', 'value'].includes(k));
-    const isSalesCsv = hasSalesIndicators || !hasCRMIndicators;
+    const hasInventoryIndicators = mappedKeys.some(k => ['sku', 'stockLevel', 'safetyStock', 'supplier', 'unitPrice'].includes(k));
+    
+    let csvRole = 'sales';
+    if (hasInventoryIndicators) csvRole = 'inventory';
+    else if (hasCRMIndicators && !hasSalesIndicators) csvRole = 'crm';
     
     for (let i = 1; i < lines.length; i++) {
       const line = lines[i];
@@ -236,7 +309,19 @@ function parseCSVContent(text: string): ParsedData {
         recordObj[standardKey] = values[idx];
       });
       
-      if (isSalesCsv) {
+      if (csvRole === 'inventory') {
+        inventoryItems.push({
+          id: recordObj.sku || `inv-csv-${i}`,
+          sku: recordObj.sku || `SKU-${i + 100}`,
+          productName: recordObj.product || 'Unknown Item',
+          stockLevel: recordObj.stockLevel && !isNaN(parseInt(recordObj.stockLevel, 10)) ? parseInt(recordObj.stockLevel, 10) : 120,
+          safetyStock: recordObj.safetyStock && !isNaN(parseInt(recordObj.safetyStock, 10)) ? parseInt(recordObj.safetyStock, 10) : 30,
+          unitCost: recordObj.cost && !isNaN(parseFloat(recordObj.cost)) ? parseFloat(recordObj.cost) : 0,
+          unitPrice: recordObj.unitPrice && !isNaN(parseFloat(recordObj.unitPrice)) ? parseFloat(recordObj.unitPrice) : 0,
+          supplier: recordObj.supplier || 'Local Supplier',
+          lastRestocked: recordObj.date ? recordObj.date.substring(0, 10) : new Date().toLocaleDateString('en-US')
+        });
+      } else if (csvRole === 'sales') {
         salesRecords.push({
           date: recordObj.date ? recordObj.date.substring(0, 10) : new Date().toISOString().substring(0, 10),
           product: recordObj.product || 'Standard Product',
@@ -268,7 +353,7 @@ function parseCSVContent(text: string): ParsedData {
     console.error('Failed to parse CSV file:', e);
   }
   
-  return { salesRecords, crmDeals };
+  return { salesRecords, crmDeals, inventoryItems };
 }
 
 /**
@@ -277,6 +362,7 @@ function parseCSVContent(text: string): ParsedData {
 function parseSQLContent(text: string): ParsedData {
   const salesRecords: SalesRecord[] = [];
   const crmDeals: CRMDeal[] = [];
+  const inventoryItems: InventoryItem[] = [];
   
   try {
     // Regex to match INSERT INTO statements
@@ -319,8 +405,21 @@ function parseSQLContent(text: string): ParsedData {
       
       const isSalesTable = tableName.includes('sale') || tableName.includes('ledger') || tableName.includes('transaction') || tableName.includes('invoice') || tableName.includes('مبيعات');
       const isCRMTable = tableName.includes('crm') || tableName.includes('deal') || tableName.includes('lead') || tableName.includes('pipeline') || tableName.includes('opportunity') || tableName.includes('عملاء');
+      const isInventoryTable = tableName.includes('inventory') || tableName.includes('stock') || tableName.includes('warehouse') || tableName.includes('store') || tableName.includes('مخزن') || tableName.includes('مخزون') || tableName.includes('مستودع') || tableName.includes('بضاعة') || tableName.includes('منتجات') || tableName.includes('اصناف');
       
-      if (isSalesTable || (!isCRMTable && recordObj.revenue !== undefined)) {
+      if (isInventoryTable || recordObj.stockLevel !== undefined) {
+        inventoryItems.push({
+          id: recordObj.sku || `inv-sql-${index++}`,
+          sku: recordObj.sku || `SKU-${index + 100}`,
+          productName: recordObj.product || 'Unknown Item',
+          stockLevel: recordObj.stockLevel && !isNaN(parseInt(recordObj.stockLevel, 10)) ? parseInt(recordObj.stockLevel, 10) : 120,
+          safetyStock: recordObj.safetyStock && !isNaN(parseInt(recordObj.safetyStock, 10)) ? parseInt(recordObj.safetyStock, 10) : 30,
+          unitCost: recordObj.cost && !isNaN(parseFloat(recordObj.cost)) ? parseFloat(recordObj.cost) : 0,
+          unitPrice: recordObj.unitPrice && !isNaN(parseFloat(recordObj.unitPrice)) ? parseFloat(recordObj.unitPrice) : 0,
+          supplier: recordObj.supplier || 'Local Supplier',
+          lastRestocked: recordObj.date ? recordObj.date.substring(0, 10) : new Date().toLocaleDateString('en-US')
+        });
+      } else if (isSalesTable || (!isCRMTable && recordObj.revenue !== undefined)) {
         salesRecords.push({
           date: recordObj.date ? recordObj.date.substring(0, 10) : new Date().toISOString().substring(0, 10),
           product: recordObj.product || 'Standard Product',
@@ -338,7 +437,7 @@ function parseSQLContent(text: string): ParsedData {
         else if (/lost|خسارة|ملغاة|perdido/i.test(rawStatus)) status = 'Lost';
         else if (/proposal|عرض|تقديم|propuesta/i.test(rawStatus)) status = 'Proposal';
         else if (/qualified|مؤهل|qual/i.test(rawStatus)) status = 'Qualified';
-
+ 
         crmDeals.push({
           id: recordObj.id || `deal-${index++}`,
           customerName: recordObj.customerName || 'Unknown Client',
@@ -352,7 +451,7 @@ function parseSQLContent(text: string): ParsedData {
     console.error('Failed to parse SQL insert scripts:', e);
   }
   
-  return { salesRecords, crmDeals };
+  return { salesRecords, crmDeals, inventoryItems };
 }
 
 function getCSVColumns(text: string): string[] {
@@ -467,6 +566,39 @@ function arrayBufferToUTF8String(buffer: ArrayBuffer): string {
       return binary;
     }
   }
+}
+
+export function normalizeArabicText(text: string): string {
+  if (!text) return '';
+  let normalized = text.toLowerCase().trim();
+  
+  // Remove leading "ال" prefix
+  if (normalized.startsWith('ال')) {
+    normalized = normalized.substring(2);
+  }
+  
+  // Normalize Alifs (أ, إ, آ to ا)
+  normalized = normalized.replace(/[أإآ]/g, 'ا');
+  
+  // Normalize Teh Marbuta (ة to ه)
+  normalized = normalized.replace(/ة/g, 'ه');
+  
+  // Normalize Yeh (ى to ي)
+  normalized = normalized.replace(/ى/g, 'ي');
+  
+  return normalized;
+}
+
+export function matchKeyword(columnName: string, keywords: string[]): boolean {
+  if (!columnName) return false;
+  const colLower = columnName.toLowerCase();
+  const colNorm = normalizeArabicText(columnName);
+  
+  return keywords.some(kw => {
+    const kwLower = kw.toLowerCase();
+    const kwNorm = normalizeArabicText(kw);
+    return colLower.includes(kwLower) || colNorm.includes(kwNorm);
+  });
 }
 
 function getSQLiteSchemaFromBinaryString(binaryString: string, filename: string): Record<string, any[]> {
@@ -599,18 +731,20 @@ export function parseLocalFile(file: File): Promise<ParsedData> {
             
             const salesRecords: SalesRecord[] = [];
             const crmDeals: CRMDeal[] = [];
+            const inventoryItems: InventoryItem[] = [];
             
-            // Find the sales table and CRM table based on column matching or table names
-            const salesTable = tableNames.find(t => t.toLowerCase().includes('sale') || t.toLowerCase().includes('ledger') || t.toLowerCase().includes('transaction') || t.toLowerCase().includes('invoice') || t.toLowerCase().includes('مبيعات') || t.toLowerCase().includes('عمليات') || t.toLowerCase().includes('فواتير'));
-            const crmTable = tableNames.find(t => t.toLowerCase().includes('crm') || t.toLowerCase().includes('deal') || t.toLowerCase().includes('lead') || t.toLowerCase().includes('pipeline') || t.toLowerCase().includes('opportunity') || t.toLowerCase().includes('عملاء') || t.toLowerCase().includes('صفقات') || t.toLowerCase().includes('فرص'));
+            // Find the sales, CRM, and inventory tables based on column matching or table names
+            const salesTable = tableNames.find(t => matchKeyword(t, ['sale', 'ledger', 'transaction', 'invoice', 'order', 'مبيعات', 'عمليات', 'فواتير', 'طلبات', 'طلب']));
+            const crmTable = tableNames.find(t => matchKeyword(t, ['crm', 'deal', 'lead', 'pipeline', 'opportunity', 'عملاء', 'صفقات', 'فرص', 'زبائن', 'عميل']));
+            const inventoryTable = tableNames.find(t => matchKeyword(t, ['inventory', 'stock', 'warehouse', 'store', 'catalog', 'product', 'item', 'مخزن', 'مخزون', 'مستودع', 'بضاعة', 'سلع', 'منتجات', 'اصناف']));
             
             if (salesTable) {
-              const dateCol = schema[salesTable].find(c => ['date', 'time', 'create', 'تاريخ', 'وقت'].some(kw => c.column.toLowerCase().includes(kw)))?.column;
-              const productCol = schema[salesTable].find(c => ['product', 'item', 'sku', 'منتج', 'سلعة'].some(kw => c.column.toLowerCase().includes(kw)))?.column;
-              const campaignCol = schema[salesTable].find(c => ['campaign', 'source', 'medium', 'حملة', 'مصدر'].some(kw => c.column.toLowerCase().includes(kw)))?.column;
-              const revenueCol = schema[salesTable].find(c => ['revenue', 'amount', 'price', 'total', 'إيراد', 'مبلغ', 'سعر', 'قيمة'].some(kw => c.column.toLowerCase().includes(kw)))?.column;
-              const unitsCol = schema[salesTable].find(c => ['unit', 'qty', 'quantity', 'count', 'كمية', 'عدد'].some(kw => c.column.toLowerCase().includes(kw)))?.column;
-              const costCol = schema[salesTable].find(c => ['cost', 'cogs', 'expense', 'تكلفة', 'مصاريف'].some(kw => c.column.toLowerCase().includes(kw)))?.column;
+              const dateCol = schema[salesTable].find(c => matchKeyword(c.column, ['date', 'time', 'create', 'تاريخ', 'وقت', 'يوم']))?.column;
+              const productCol = schema[salesTable].find(c => matchKeyword(c.column, ['product', 'item', 'sku', 'منتج', 'سلعة', 'صنف']))?.column;
+              const campaignCol = schema[salesTable].find(c => matchKeyword(c.column, ['campaign', 'source', 'medium', 'حملة', 'مصدر', 'تسويق']))?.column;
+              const revenueCol = schema[salesTable].find(c => matchKeyword(c.column, ['revenue', 'amount', 'price', 'total', 'إيراد', 'مبلغ', 'سعر', 'قيمة', 'اجمالي']))?.column;
+              const unitsCol = schema[salesTable].find(c => matchKeyword(c.column, ['unit', 'qty', 'quantity', 'count', 'كمية', 'عدد']))?.column;
+              const costCol = schema[salesTable].find(c => matchKeyword(c.column, ['cost', 'cogs', 'expense', 'تكلفة', 'مصاريف']))?.column;
               
               const rowsRes = db.exec(`SELECT * FROM "${salesTable}" LIMIT 2000`);
               if (rowsRes.length > 0 && rowsRes[0].columns && rowsRes[0].values) {
@@ -636,11 +770,11 @@ export function parseLocalFile(file: File): Promise<ParsedData> {
             }
             
             if (crmTable) {
-              const idCol = schema[crmTable].find(c => ['id', 'key', 'code', 'معرف', 'رقم'].some(kw => c.column.toLowerCase().includes(kw)))?.column;
-              const nameCol = schema[crmTable].find(c => ['name', 'customer', 'client', 'contact', 'عميل', 'اسم'].some(kw => c.column.toLowerCase().includes(kw)))?.column;
-              const valueCol = schema[crmTable].find(c => ['value', 'amount', 'worth', 'revenue', 'قيمة', 'مبلغ'].some(kw => c.column.toLowerCase().includes(kw)))?.column;
-              const statusCol = schema[crmTable].find(c => ['status', 'stage', 'state', 'phase', 'حالة', 'مرحلة'].some(kw => c.column.toLowerCase().includes(kw)))?.column;
-              const updatedCol = schema[crmTable].find(c => ['update', 'date', 'time', 'تحديث', 'تاريخ'].some(kw => c.column.toLowerCase().includes(kw)))?.column;
+              const idCol = schema[crmTable].find(c => matchKeyword(c.column, ['id', 'key', 'code', 'معرف', 'رقم', 'كود']))?.column;
+              const nameCol = schema[crmTable].find(c => matchKeyword(c.column, ['name', 'customer', 'client', 'contact', 'عميل', 'اسم', 'زبون']))?.column;
+              const valueCol = schema[crmTable].find(c => matchKeyword(c.column, ['value', 'amount', 'worth', 'revenue', 'قيمة', 'مبلغ', 'سعر']))?.column;
+              const statusCol = schema[crmTable].find(c => matchKeyword(c.column, ['status', 'stage', 'state', 'phase', 'حالة', 'مرحلة']))?.column;
+              const updatedCol = schema[crmTable].find(c => matchKeyword(c.column, ['update', 'date', 'time', 'تحديث', 'تاريخ']))?.column;
               
               const rowsRes = db.exec(`SELECT * FROM "${crmTable}" LIMIT 2000`);
               if (rowsRes.length > 0 && rowsRes[0].columns && rowsRes[0].values) {
@@ -668,11 +802,46 @@ export function parseLocalFile(file: File): Promise<ParsedData> {
                 });
               }
             }
+
+            if (inventoryTable) {
+              const skuCol = schema[inventoryTable].find(c => matchKeyword(c.column, ['sku', 'code', 'id', 'معرف', 'رمز', 'رقم', 'كود']))?.column;
+              const nameCol = schema[inventoryTable].find(c => matchKeyword(c.column, ['name', 'product', 'item', 'title', 'منتج', 'اسم', 'سلعة', 'صنف']))?.column;
+              const stockCol = schema[inventoryTable].find(c => matchKeyword(c.column, ['stock', 'level', 'qty', 'quantity', 'count', 'available', 'كمية', 'مستوى', 'رصيد', 'موجود']))?.column;
+              const safetyCol = schema[inventoryTable].find(c => matchKeyword(c.column, ['safety', 'min', 'minimum', 'alert', 'حد', 'امان', 'ادنى', 'تنبيه']))?.column;
+              const costCol = schema[inventoryTable].find(c => matchKeyword(c.column, ['cost', 'cogs', 'purchase', 'شراء', 'تكلفة', 'سعر_التكلفة']))?.column;
+              const priceCol = schema[inventoryTable].find(c => matchKeyword(c.column, ['price', 'sale_price', 'sell', 'بيع', 'سعر', 'سعر_البيع']))?.column;
+              const supplierCol = schema[inventoryTable].find(c => matchKeyword(c.column, ['supplier', 'vendor', 'source', 'manufacturer', 'مورد', 'شركة', 'مصدر']))?.column;
+              const restockedCol = schema[inventoryTable].find(c => matchKeyword(c.column, ['date', 'time', 'update', 'restock', 'تاريخ', 'تحديث', 'توريد']))?.column;
+              
+              const rowsRes = db.exec(`SELECT * FROM "${inventoryTable}" LIMIT 2000`);
+              if (rowsRes.length > 0 && rowsRes[0].columns && rowsRes[0].values) {
+                const colNames = rowsRes[0].columns;
+                rowsRes[0].values.forEach((rowVals: any, idx) => {
+                  const rowObj: any = {};
+                  colNames.forEach((cName, cIdx) => {
+                    rowObj[cName] = rowVals[cIdx];
+                  });
+                  
+                  inventoryItems.push({
+                    id: skuCol && rowObj[skuCol] ? String(rowObj[skuCol]) : `inv-sqlite-${idx + 1}`,
+                    sku: skuCol && rowObj[skuCol] ? String(rowObj[skuCol]) : `SKU-${idx + 100}`,
+                    productName: nameCol && rowObj[nameCol] ? String(rowObj[nameCol]) : 'Unknown Item',
+                    stockLevel: stockCol && !isNaN(parseInt(rowObj[stockCol], 10)) ? parseInt(rowObj[stockCol], 10) : 120,
+                    safetyStock: safetyCol && !isNaN(parseInt(rowObj[safetyCol], 10)) ? parseInt(rowObj[safetyCol], 10) : 30,
+                    unitCost: costCol && !isNaN(parseFloat(rowObj[costCol])) ? parseFloat(rowObj[costCol]) : 0,
+                    unitPrice: priceCol && !isNaN(parseFloat(rowObj[priceCol])) ? parseFloat(rowObj[priceCol]) : 0,
+                    supplier: supplierCol && rowObj[supplierCol] ? String(rowObj[supplierCol]) : 'Local Supplier',
+                    lastRestocked: restockedCol && rowObj[restockedCol] ? String(rowObj[restockedCol]).substring(0, 10) : new Date().toLocaleDateString('en-US')
+                  });
+                });
+              }
+            }
             
             db.close();
             resolve({
               salesRecords,
               crmDeals,
+              inventoryItems,
               originalSchema: schema
             });
           } catch (sqliteErr) {
@@ -681,6 +850,7 @@ export function parseLocalFile(file: File): Promise<ParsedData> {
             resolve({
               salesRecords: [],
               crmDeals: [],
+              inventoryItems: [],
               originalSchema: schema
             });
           }
@@ -690,6 +860,7 @@ export function parseLocalFile(file: File): Promise<ParsedData> {
           resolve({
             salesRecords: [],
             crmDeals: [],
+            inventoryItems: [],
             originalSchema: schema
           });
         });
@@ -710,7 +881,7 @@ export function parseLocalFile(file: File): Promise<ParsedData> {
           } else if (text.includes(',') && text.split('\n')[0].split(',').length > 2) {
             parsed = parseCSVContent(text);
           } else {
-            parsed = { salesRecords: [], crmDeals: [] };
+            parsed = { salesRecords: [], crmDeals: [], inventoryItems: [] };
           }
         }
         
@@ -723,7 +894,7 @@ export function parseLocalFile(file: File): Promise<ParsedData> {
     };
     
     reader.onerror = () => {
-      resolve({ salesRecords: [], crmDeals: [] });
+      resolve({ salesRecords: [], crmDeals: [], inventoryItems: [] });
     };
     
     reader.readAsArrayBuffer(file);

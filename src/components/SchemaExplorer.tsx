@@ -81,10 +81,22 @@ export default function SchemaExplorer({
     { id: 'Last Updated', key: 'lastUpdated', label: isRtl ? 'آخر تحديث زمنياً' : 'Last Updated Timestamp', icon: Clock, color: 'text-pink-400 border-pink-500/20 bg-pink-500/5' },
   ];
 
+  const inventorySlots = [
+    { id: 'SKU', key: 'sku', label: isRtl ? 'رمز المنتج SKU' : 'Product SKU/Code', icon: Hash, color: 'text-amber-400 border-amber-500/20 bg-amber-500/5' },
+    { id: 'Product Name', key: 'productName', label: isRtl ? 'اسم السلعة / المنتج' : 'Item/Product Name', icon: ShoppingBag, color: 'text-indigo-400 border-indigo-500/20 bg-indigo-500/5' },
+    { id: 'Stock Level', key: 'stockLevel', label: isRtl ? 'مستوى المخزون الحالي' : 'Stock Level Qty', icon: Layers, color: 'text-teal-400 border-teal-500/20 bg-teal-500/5' },
+    { id: 'Safety Stock', key: 'safetyStock', label: isRtl ? 'حد الأمان للمخزون' : 'Safety Stock Threshold', icon: ShieldCheck, color: 'text-rose-400 border-rose-500/20 bg-rose-500/5' },
+    { id: 'Unit Cost', key: 'unitCost', label: isRtl ? 'تكلفة الوحدة' : 'Unit Cost Price', icon: DollarSign, color: 'text-emerald-400 border-emerald-500/20 bg-emerald-500/5' },
+    { id: 'Unit Price', key: 'unitPrice', label: isRtl ? 'سعر بيع الوحدة' : 'Unit Retail Price', icon: DollarSign, color: 'text-blue-400 border-blue-500/20 bg-blue-500/5' },
+    { id: 'Supplier', key: 'supplier', label: isRtl ? 'المورد الرئيسي' : 'Supplier / Vendor', icon: User, color: 'text-sky-400 border-sky-500/20 bg-sky-500/5' },
+    { id: 'Last Restocked', key: 'lastRestocked', label: isRtl ? 'تاريخ آخر توريد' : 'Last Restocked Date', icon: Clock, color: 'text-pink-400 border-pink-500/20 bg-pink-500/5' },
+  ];
+
   // Local state to store customized mapping
   const [localMapping, setLocalMapping] = useState<any>({
     sales: { table: '', date: '', product: '', campaign: '', revenue: '', units: '', cost: '' },
-    crm: { table: '', id: '', customerName: '', value: '', status: '', lastUpdated: '' }
+    crm: { table: '', id: '', customerName: '', value: '', status: '', lastUpdated: '' },
+    inventory: { table: '', sku: '', productName: '', stockLevel: '', safetyStock: '', unitCost: '', unitPrice: '', supplier: '', lastRestocked: '' }
   });
 
   const initializedRef = useRef(false);
@@ -92,12 +104,19 @@ export default function SchemaExplorer({
   // Extract initial mapping if dbMapping is not provided
   useEffect(() => {
     if (dbMapping && Object.keys(dbMapping).length > 0) {
-      setLocalMapping(dbMapping);
+      // Ensure inventory mapping fields exist in loaded mapping
+      const populated = {
+        sales: { table: '', date: '', product: '', campaign: '', revenue: '', units: '', cost: '', ...dbMapping.sales },
+        crm: { table: '', id: '', customerName: '', value: '', status: '', lastUpdated: '', ...dbMapping.crm },
+        inventory: { table: '', sku: '', productName: '', stockLevel: '', safetyStock: '', unitCost: '', unitPrice: '', supplier: '', lastRestocked: '', ...dbMapping.inventory }
+      };
+      setLocalMapping(populated);
       initializedRef.current = true;
     } else if (tables.length > 0) {
       const mapping: any = {
         sales: { table: '', date: '', product: '', campaign: '', revenue: '', units: '', cost: '' },
-        crm: { table: '', id: '', customerName: '', value: '', status: '', lastUpdated: '' }
+        crm: { table: '', id: '', customerName: '', value: '', status: '', lastUpdated: '' },
+        inventory: { table: '', sku: '', productName: '', stockLevel: '', safetyStock: '', unitCost: '', unitPrice: '', supplier: '', lastRestocked: '' }
       };
       
       tables.forEach(t => {
@@ -120,6 +139,18 @@ export default function SchemaExplorer({
             else if (col.mappedTo === 'Status') mapping.crm.status = col.columnName;
             else if (col.mappedTo === 'Last Updated') mapping.crm.lastUpdated = col.columnName;
           });
+        } else if (t.mappedTo === 'Inventory Management') {
+          mapping.inventory.table = t.tableName;
+          t.columns.forEach((col: any) => {
+            if (col.mappedTo === 'SKU') mapping.inventory.sku = col.columnName;
+            else if (col.mappedTo === 'Product Name') mapping.inventory.productName = col.columnName;
+            else if (col.mappedTo === 'Stock Level') mapping.inventory.stockLevel = col.columnName;
+            else if (col.mappedTo === 'Safety Stock') mapping.inventory.safetyStock = col.columnName;
+            else if (col.mappedTo === 'Unit Cost') mapping.inventory.unitCost = col.columnName;
+            else if (col.mappedTo === 'Unit Price') mapping.inventory.unitPrice = col.columnName;
+            else if (col.mappedTo === 'Supplier') mapping.inventory.supplier = col.columnName;
+            else if (col.mappedTo === 'Last Restocked') mapping.inventory.lastRestocked = col.columnName;
+          });
         }
       });
       initializedRef.current = true;
@@ -137,7 +168,7 @@ export default function SchemaExplorer({
   }
 
   // Handle setting table role
-  const handleTableRoleChange = (role: 'sales' | 'crm' | 'unmapped') => {
+  const handleTableRoleChange = (role: 'sales' | 'crm' | 'inventory' | 'unmapped') => {
     if (!activeTable) return;
     const updated = { ...localMapping };
     
@@ -147,6 +178,9 @@ export default function SchemaExplorer({
       updated.sales.table = activeTable.tableName;
       if (updated.crm.table === activeTable.tableName) {
         updated.crm.table = '';
+      }
+      if (updated.inventory.table === activeTable.tableName) {
+        updated.inventory.table = '';
       }
       // Fill in default smart guesses for columns based on analysis
       activeTable.columns.forEach((col: any) => {
@@ -170,6 +204,9 @@ export default function SchemaExplorer({
       if (updated.sales.table === activeTable.tableName) {
         updated.sales.table = '';
       }
+      if (updated.inventory.table === activeTable.tableName) {
+        updated.inventory.table = '';
+      }
       activeTable.columns.forEach((col: any) => {
         if (col.mappedTo === 'Deal ID') updated.crm.id = col.columnName;
         else if (col.mappedTo === 'Client Name') updated.crm.customerName = col.columnName;
@@ -183,12 +220,42 @@ export default function SchemaExplorer({
       if (!updated.crm.value) updated.crm.value = colNames[2] || colNames[0] || '';
       if (!updated.crm.status) updated.crm.status = colNames[3] || colNames[0] || '';
       if (!updated.crm.lastUpdated) updated.crm.lastUpdated = colNames[4] || colNames[0] || '';
+    } else if (role === 'inventory') {
+      updated.inventory.table = activeTable.tableName;
+      if (updated.sales.table === activeTable.tableName) {
+        updated.sales.table = '';
+      }
+      if (updated.crm.table === activeTable.tableName) {
+        updated.crm.table = '';
+      }
+      activeTable.columns.forEach((col: any) => {
+        if (col.mappedTo === 'SKU') updated.inventory.sku = col.columnName;
+        else if (col.mappedTo === 'Product Name') updated.inventory.productName = col.columnName;
+        else if (col.mappedTo === 'Stock Level') updated.inventory.stockLevel = col.columnName;
+        else if (col.mappedTo === 'Safety Stock') updated.inventory.safetyStock = col.columnName;
+        else if (col.mappedTo === 'Unit Cost') updated.inventory.unitCost = col.columnName;
+        else if (col.mappedTo === 'Unit Price') updated.inventory.unitPrice = col.columnName;
+        else if (col.mappedTo === 'Supplier') updated.inventory.supplier = col.columnName;
+        else if (col.mappedTo === 'Last Restocked') updated.inventory.lastRestocked = col.columnName;
+      });
+      const colNames = activeTable.columns.map(c => c.columnName);
+      if (!updated.inventory.sku) updated.inventory.sku = colNames[0] || '';
+      if (!updated.inventory.productName) updated.inventory.productName = colNames[1] || colNames[0] || '';
+      if (!updated.inventory.stockLevel) updated.inventory.stockLevel = colNames[2] || colNames[0] || '';
+      if (!updated.inventory.safetyStock) updated.inventory.safetyStock = colNames[3] || colNames[0] || '';
+      if (!updated.inventory.unitCost) updated.inventory.unitCost = colNames[4] || colNames[0] || '';
+      if (!updated.inventory.unitPrice) updated.inventory.unitPrice = colNames[5] || colNames[0] || '';
+      if (!updated.inventory.supplier) updated.inventory.supplier = colNames[6] || colNames[0] || '';
+      if (!updated.inventory.lastRestocked) updated.inventory.lastRestocked = colNames[7] || colNames[0] || '';
     } else {
       if (updated.sales.table === activeTable.tableName) {
         updated.sales.table = '';
       }
       if (updated.crm.table === activeTable.tableName) {
         updated.crm.table = '';
+      }
+      if (updated.inventory.table === activeTable.tableName) {
+        updated.inventory.table = '';
       }
     }
     
@@ -197,12 +264,14 @@ export default function SchemaExplorer({
   };
 
   // Handle changing column slot assignment
-  const handleColumnSlotChange = (slotType: 'sales' | 'crm', slotKey: string, columnName: string) => {
+  const handleColumnSlotChange = (slotType: 'sales' | 'crm' | 'inventory', slotKey: string, columnName: string) => {
     const updated = { ...localMapping };
     if (slotType === 'sales') {
       updated.sales[slotKey] = columnName;
-    } else {
+    } else if (slotType === 'crm') {
       updated.crm[slotKey] = columnName;
+    } else if (slotType === 'inventory') {
+      updated.inventory[slotKey] = columnName;
     }
     setLocalMapping(updated);
     onChangeMapping?.(updated);
@@ -211,7 +280,8 @@ export default function SchemaExplorer({
   // Check role of active table
   const isActiveTableSales = localMapping.sales?.table === activeTable?.tableName;
   const isActiveTableCRM = localMapping.crm?.table === activeTable?.tableName;
-  const activeTableRole = isActiveTableSales ? 'sales' : isActiveTableCRM ? 'crm' : 'unmapped';
+  const isActiveTableInventory = localMapping.inventory?.table === activeTable?.tableName;
+  const activeTableRole = isActiveTableSales ? 'sales' : isActiveTableCRM ? 'crm' : isActiveTableInventory ? 'inventory' : 'unmapped';
 
   return (
     <motion.div 
@@ -294,6 +364,7 @@ export default function SchemaExplorer({
             const isActive = selectedTableIdx === idx;
             const isRoutedToSales = localMapping.sales?.table === t.tableName;
             const isRoutedToCRM = localMapping.crm?.table === t.tableName;
+            const isRoutedToInventory = localMapping.inventory?.table === t.tableName;
             
             let destLabel = isRtl ? 'غير موجه' : 'Unmapped';
             let badgeClass = 'border-slate-800 text-slate-400 bg-slate-950/40';
@@ -303,6 +374,9 @@ export default function SchemaExplorer({
             } else if (isRoutedToCRM) {
               destLabel = isRtl ? 'لوحة CRM' : 'CRM Pipeline';
               badgeClass = 'border-purple-500/20 text-purple-400 bg-purple-500/5';
+            } else if (isRoutedToInventory) {
+              destLabel = isRtl ? 'لوحة المخزون' : 'Inventory';
+              badgeClass = 'border-teal-500/20 text-teal-400 bg-teal-500/5';
             }
 
             return (
@@ -358,7 +432,7 @@ export default function SchemaExplorer({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <button
             type="button"
             onClick={() => handleTableRoleChange('unmapped')}
@@ -394,6 +468,18 @@ export default function SchemaExplorer({
           >
             {isRtl ? 'جدول علاقات العملاء CRM' : 'CRM Table'}
           </button>
+
+          <button
+            type="button"
+            onClick={() => handleTableRoleChange('inventory')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-all ${
+              activeTableRole === 'inventory'
+                ? 'bg-teal-500/10 border-teal-500/30 text-teal-400'
+                : 'bg-transparent border-slate-800 text-slate-400 hover:border-teal-500/20 hover:text-teal-300'
+            }`}
+          >
+            {isRtl ? 'جدول المخزون والمستودع' : 'Inventory Table'}
+          </button>
         </div>
       </div>
 
@@ -407,7 +493,7 @@ export default function SchemaExplorer({
               {isRtl ? `أعمدة الجدول: ${activeTable.tableName}` : `Columns of: ${activeTable.tableName}`}
             </span>
             <span className="text-[9px] bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 px-2 py-0.5 rounded-full" dir="ltr">
-              {activeTableRole === 'sales' ? (isRtl ? 'مبيعات' : 'Sales') : activeTableRole === 'crm' ? 'CRM' : (isRtl ? 'غير موجه' : 'Unmapped')}
+              {activeTableRole === 'sales' ? (isRtl ? 'مبيعات' : 'Sales') : activeTableRole === 'crm' ? 'CRM' : activeTableRole === 'inventory' ? (isRtl ? 'مخزون' : 'Inventory') : (isRtl ? 'غير موجه' : 'Unmapped')}
             </span>
           </div>
 
@@ -427,6 +513,12 @@ export default function SchemaExplorer({
                 const cKey = Object.keys(localMapping.crm).find(k => localMapping.crm[k as keyof typeof localMapping.crm] === col.columnName);
                 if (cKey && cKey !== 'table') {
                   const matched = crmSlots.find(s => s.key === cKey);
+                  if (matched) currentSlotLabel = matched.id;
+                }
+              } else if (activeTableRole === 'inventory') {
+                const iKey = Object.keys(localMapping.inventory).find(k => localMapping.inventory[k as keyof typeof localMapping.inventory] === col.columnName);
+                if (iKey && iKey !== 'table') {
+                  const matched = inventorySlots.find(s => s.key === iKey);
                   if (matched) currentSlotLabel = matched.id;
                 }
               }
@@ -628,6 +720,72 @@ export default function SchemaExplorer({
             </div>
           </div>
 
+          {/* Inventory Target Workspace Card */}
+          <div className={`border rounded-xl p-4 transition-all relative ${
+            activeTableRole === 'inventory' 
+              ? 'border-teal-500/30 bg-teal-500/2' 
+              : 'border-slate-800 bg-slate-950/20 opacity-40 pointer-events-none'
+          }`}>
+            <div className="flex items-center gap-2 border-b border-slate-800 pb-2 mb-3">
+              <Database className="w-4 h-4 text-teal-400" />
+              <span className="text-[11px] font-bold text-white uppercase tracking-wider">
+                {isRtl ? 'خانات وحدة المخزون المستهدفة' : 'Inventory Workspace Target Slots'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {inventorySlots.map((slot) => {
+                const mappedColumnName = localMapping.inventory?.[slot.key] || '';
+                const isSelected = hoveredCol && localMapping.inventory?.[slot.key] === hoveredCol;
+                const isSlotHovered = hoveredSlot === slot.id;
+
+                return (
+                  <div
+                    key={slot.id}
+                    onMouseEnter={() => setHoveredSlot(slot.id)}
+                    onMouseLeave={() => setHoveredSlot(null)}
+                    className={`border rounded-xl p-2.5 transition-all relative overflow-hidden ${slot.color} ${
+                      isSelected || isSlotHovered
+                        ? 'ring-1 ring-indigo-500/40 border-indigo-500/30 scale-[1.02] bg-slate-950/60'
+                        : 'bg-slate-950/30'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <slot.icon className="w-3.5 h-3.5 shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <span className="text-[9px] text-slate-400 block font-medium leading-none">
+                          {slot.label}
+                        </span>
+                        <span className="text-[8px] font-bold text-slate-500 block mt-0.5 tracking-wider uppercase">
+                          {slot.id}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="mt-2 pt-1.5 border-t border-slate-800/40">
+                      {activeTableRole === 'inventory' ? (
+                        <select
+                          value={mappedColumnName}
+                          onChange={(e) => handleColumnSlotChange('inventory', slot.key, e.target.value)}
+                          className="bg-slate-950 border border-slate-800 text-slate-200 text-[10px] font-mono rounded-lg px-2 py-1 focus:border-indigo-500 focus:outline-none w-full"
+                        >
+                          <option value="">{isRtl ? '-- اختر عموداً --' : '-- Choose column --'}</option>
+                          {activeTable.columns.map((c, cIdx) => (
+                            <option key={`${c.columnName}-${cIdx}`} value={c.columnName}>{c.columnName}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className="text-[9px] text-slate-600 italic">
+                          {isRtl ? 'غير متوفر' : 'Unmapped'}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
         </div>
 
       </div>
@@ -637,8 +795,8 @@ export default function SchemaExplorer({
         <span className="flex items-center gap-1.5">
           <HelpCircle className="w-3.5 h-3.5 text-slate-500" />
           {isRtl 
-            ? 'حدد الجدول، عيّن دوره (مبيعات أو CRM)، ثم اختر وجهة كل عمود بدقة متناهية.' 
-            : 'Select a table, assign its role, then map each column field precisely using the dropdown selectors.'}
+            ? 'حدد الجدول، عيّن دوره (مبيعات أو CRM أو مخزون)، ثم اختر وجهة كل عمود بدقة متناهية.' 
+            : 'Select a table, assign its role (Sales, CRM, or Inventory), then map each column field precisely using the dropdown selectors.'}
         </span>
         <span className="text-[9px] font-mono text-slate-500">
           SniperAI Cognitive Mapping v2.5

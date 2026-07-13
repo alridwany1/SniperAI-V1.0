@@ -1421,6 +1421,7 @@ app.post("/api/tenants", async (req, res) => {
   // Store parsed local file records or default to empty
   const salesToSave = req.body.salesRecords || [];
   const crmToSave = req.body.crmDeals || [];
+  const inventoryToSave = req.body.inventoryItems || [];
 
   SALES_DB[newTenant.id] = salesToSave;
   CRM_DB[newTenant.id] = crmToSave;
@@ -1433,6 +1434,17 @@ app.post("/api/tenants", async (req, res) => {
       }));
     } catch (e) {
       console.error("Failed to save tenant records to Firestore:", e);
+    }
+  }
+
+  if (inventoryToSave.length > 0) {
+    try {
+      for (const item of inventoryToSave) {
+        await setDoc(doc(db, 'inventory', newTenant.id, 'items', item.id), cleanObject(item));
+      }
+      console.log(`Saved ${inventoryToSave.length} parsed inventory items for tenant ${newTenant.id}`);
+    } catch (e) {
+      console.error("Failed to save parsed inventory items to Firestore:", e);
     }
   }
 
@@ -1712,6 +1724,7 @@ function applyMappingToAnalysis(analysis: any, dbMapping: any) {
   if (!analysis || !analysis.tables || !dbMapping) return analysis;
   const salesTable = dbMapping.sales?.table;
   const crmTable = dbMapping.crm?.table;
+  const inventoryTable = dbMapping.inventory?.table;
   
   const tables = (analysis.tables || []).map((t: any) => {
     let mappedTo = 'Unmapped';
@@ -1719,6 +1732,8 @@ function applyMappingToAnalysis(analysis: any, dbMapping: any) {
       mappedTo = 'Sales Ledger';
     } else if (t.tableName === crmTable) {
       mappedTo = 'CRM Pipeline';
+    } else if (t.tableName === inventoryTable) {
+      mappedTo = 'Inventory Management';
     }
     
     const columns = (t.columns || []).map((col: any) => {
@@ -1738,6 +1753,16 @@ function applyMappingToAnalysis(analysis: any, dbMapping: any) {
         else if (col.columnName === crmMap.value) colMappedTo = 'Deal Value';
         else if (col.columnName === crmMap.status) colMappedTo = 'Status';
         else if (col.columnName === crmMap.lastUpdated) colMappedTo = 'Last Updated';
+      } else if (mappedTo === 'Inventory Management') {
+        const invMap = dbMapping.inventory || {};
+        if (col.columnName === invMap.sku) colMappedTo = 'SKU';
+        else if (col.columnName === invMap.productName) colMappedTo = 'Product Name';
+        else if (col.columnName === invMap.stockLevel) colMappedTo = 'Stock Level';
+        else if (col.columnName === invMap.safetyStock) colMappedTo = 'Safety Stock';
+        else if (col.columnName === invMap.unitCost) colMappedTo = 'Unit Cost';
+        else if (col.columnName === invMap.unitPrice) colMappedTo = 'Unit Price';
+        else if (col.columnName === invMap.supplier) colMappedTo = 'Supplier';
+        else if (col.columnName === invMap.lastRestocked) colMappedTo = 'Last Restocked';
       }
       return { ...col, mappedTo: colMappedTo };
     });
