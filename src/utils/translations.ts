@@ -181,6 +181,7 @@ export const translations = {
     planLabel: 'Assigned Subscription Plan',
     adminTab: 'User Directory',
     dashboardTab: 'Analytics Terminal',
+    inventoryTab: 'Inventory Management',
     // Tenant Settings
     tenantSettings: 'Tenant Settings',
     updateTenantSettings: 'Update Tenant Workspace Settings',
@@ -224,6 +225,9 @@ export const translations = {
     workspacesDeletedSuccess: 'Successfully deleted selected tenant workspaces.',
     workspacesExportedSuccess: 'Successfully exported selected tenant workspaces.',
     searchWorkspacesPlaceholder: 'Search workspaces by name or industry...',
+    lastRefreshedLabel: 'Last Refreshed',
+    refreshNow: 'Refresh Now',
+    refreshing: 'Refreshing...',
   },
   ar: {
     dir: 'rtl',
@@ -405,6 +409,7 @@ export const translations = {
     planLabel: 'باقة الاشتراك المخصصة',
     adminTab: 'دليل المستخدمين',
     dashboardTab: 'لوحة التحليلات',
+    inventoryTab: 'إدارة المخزون',
     // Tenant Settings
     tenantSettings: 'إعدادات المستأجر',
     updateTenantSettings: 'تعديل إعدادات مساحة عمل المستأجر',
@@ -448,5 +453,8 @@ export const translations = {
     workspacesDeletedSuccess: 'تم حذف مساحات عمل المستأجرين المحددة بنجاح.',
     workspacesExportedSuccess: 'تم تصدير مساحات عمل المستأجرين المحددة بنجاح.',
     searchWorkspacesPlaceholder: 'ابحث عن مساحات العمل بالاسم أو القطاع...',
+    lastRefreshedLabel: 'آخر تحديث',
+    refreshNow: 'تحديث الآن',
+    refreshing: 'جاري التحديث...',
   }
 };

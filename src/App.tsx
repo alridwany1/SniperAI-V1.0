@@ -21,8 +21,9 @@ import FederatedSessionHub from './components/FederatedSessionHub';
 import CommandPalette from './components/CommandPalette';
 import OnboardingTour from './components/OnboardingTour';
 import AddTenantScreen from './components/AddTenantScreen';
+import InventoryManagement from './components/InventoryManagement';
 import { translations, Language } from './utils/translations';
-import { Layers, Shield, Sparkles, TrendingUp, Cpu, Radio, Globe, LogOut, PlusCircle, Users, CreditCard, User, Database } from 'lucide-react';
+import { Layers, Shield, Sparkles, TrendingUp, Cpu, Radio, Globe, LogOut, PlusCircle, Users, CreditCard, User, Database, RefreshCw, Package } from 'lucide-react';
 import { addAuditLog } from './utils/auditLogger';
 import sniperLogo from './assets/images/sniper_ai_logo_1783155755401.jpg';
 import { db, handleFirestoreError, OperationType } from './utils/firebase';
@@ -47,6 +48,9 @@ export default function App() {
     return (localStorage.getItem('language') || 'en') as Language;
   });
 
+  const [lastRefreshed, setLastRefreshed] = useState<Date>(() => new Date());
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
+
   const handleLanguageToggle = () => {
     const nextLang = language === 'en' ? 'ar' : 'en';
     localStorage.setItem('language', nextLang);
@@ -65,7 +69,7 @@ export default function App() {
   const t = translations[language];
 
   // Active view toggle (for super admin)
-  const [activeView, setActiveView] = useState<'dashboard' | 'users' | 'billing' | 'profile'>('dashboard');
+  const [activeView, setActiveView] = useState<'dashboard' | 'users' | 'billing' | 'profile' | 'inventory'>('dashboard');
 
   // Federated user profile details
   const [userProfile, setUserProfile] = useState<{
@@ -447,7 +451,7 @@ export default function App() {
 
   // Main HTTP post to get calculated metrics and charts
   const fetchMetrics = () => {
-    fetch('/api/dashboard/metrics', {
+    return fetch('/api/dashboard/metrics', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -513,13 +517,14 @@ export default function App() {
             });
           });
         }
+        setLastRefreshed(new Date());
       })
       .catch(err => console.error("Error loading metrics:", err));
   };
 
   // Get CRM status
   const fetchCRMDeals = () => {
-    fetch(`/api/crm/deals/${selectedTenantId}`)
+    return fetch(`/api/crm/deals/${selectedTenantId}`)
       .then(res => res.json())
       .then((deals) => setCrmDeals(deals))
       .catch(err => console.error("Error loading CRM deals:", err));
@@ -527,7 +532,7 @@ export default function App() {
 
   const fetchSyncHistory = () => {
     setSyncHistoryLoading(true);
-    fetch(`/api/crm/sync-history/${selectedTenantId}`)
+    return fetch(`/api/crm/sync-history/${selectedTenantId}`)
       .then(res => res.json())
       .then((history) => {
         setSyncHistory(history);
@@ -537,6 +542,42 @@ export default function App() {
         console.error("Error loading CRM sync history:", err);
         setSyncHistoryLoading(false);
       });
+  };
+
+  // Handle manual trigger refresh
+  const handleRefreshNow = async () => {
+    if (isRefreshing) return;
+    setIsRefreshing(true);
+    addAuditLog(
+      userEmail || 'SYSTEM',
+      'SYSTEM',
+      `Manual dashboard data refresh initiated for tenant: ${selectedTenantId}`,
+      'INFO'
+    );
+    
+    // Smooth UI transition with a minimum loading duration
+    const minDelay = new Promise(resolve => setTimeout(resolve, 800));
+    
+    try {
+      await Promise.all([
+        fetchMetrics(),
+        fetchCRMDeals(),
+        fetchSyncHistory(),
+        minDelay
+      ]);
+      
+      addNotification(
+        'SYSTEM',
+        'Dashboard Refreshed',
+        'تم تحديث لوحة التحكم',
+        'All analytics streams, KPIs, and CRM pipelines have been updated to the latest state.',
+        'تم تحديث جميع تدفقات التحليلات، مؤشرات الأداء، وصفقات إدارة العملاء إلى أحدث حالة.'
+      );
+    } catch (err) {
+      console.error("Manual refresh failed:", err);
+    } finally {
+      setIsRefreshing(false);
+    }
   };
 
   // Handle forecast calculations & commentary query
@@ -609,7 +650,11 @@ export default function App() {
     // Deeply sanitize to prevent any undefined values from leaking into Firestore
     const sanitizedMessages = sanitizeFirestoreData(messages || []);
 
-    setDoc(docRef, { messages: sanitizedMessages })
+    setDoc(docRef, { 
+      messages: sanitizedMessages,
+      userEmail: userEmail || 'anonymous',
+      tenantId: selectedTenantId
+    })
       .catch((err) => {
         console.warn("Failed to persist chat history to Firestore:", err);
       });
@@ -916,6 +961,23 @@ export default function App() {
     }
   };
 
+  const handleUpdateTenantProducts = async (newProducts: { name: string; price: number; costOfGoods: number }[]) => {
+    if (!activeTenant) return;
+    const updatedTenant: Tenant = {
+      ...activeTenant,
+      products: newProducts
+    };
+    
+    try {
+      await setDoc(doc(db, 'tenants', activeTenant.id), sanitizeFirestoreData(updatedTenant));
+    } catch (e) {
+      console.error("Failed to update tenant products in Firestore:", e);
+    }
+
+    setTenants(prev => prev.map(t => t.id === activeTenant.id ? updatedTenant : t));
+    setActiveTenant(updatedTenant);
+  };
+
   if (!isAuthenticated) {
     return (
       <AuthPage 
@@ -1037,6 +1099,28 @@ export default function App() {
               <span>{language === 'ar' ? 'جولة سريعة' : 'Quick Tour'}</span>
             </button>
 
+            {/* Real-time Manual Refresh Trigger & Indicator */}
+            <div className="flex items-center gap-2 bg-slate-900/90 text-slate-300 px-3 py-1.5 rounded-xl border border-slate-800 text-xs">
+              <span className="text-slate-400 flex items-center">
+                <span>{t.lastRefreshedLabel}:</span>
+                <strong className="font-mono text-white ml-1 mr-1 font-semibold">
+                  {lastRefreshed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                </strong>
+              </span>
+              <div className="w-[1px] h-3 bg-slate-800 mx-1"></div>
+              <button
+                onClick={handleRefreshNow}
+                disabled={isRefreshing}
+                className={`flex items-center gap-1 hover:text-white transition-all cursor-pointer font-bold ${isRefreshing ? 'opacity-70' : ''}`}
+                title={t.refreshNow}
+              >
+                <RefreshCw className={`w-3.5 h-3.5 text-indigo-400 ${isRefreshing ? 'animate-spin' : 'hover:rotate-180 duration-500 transition-transform'}`} />
+                <span>
+                  {isRefreshing ? t.refreshing : t.refreshNow}
+                </span>
+              </button>
+            </div>
+
             <ThemeSwitcher />
 
             {/* Global Control Alert Stream Center */}
@@ -1113,6 +1197,17 @@ export default function App() {
               <span>{language === 'ar' ? 'الفواتير' : 'Billing'}</span>
             </button>
             <button
+              onClick={() => setActiveView('inventory')}
+              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
+                activeView === 'inventory'
+                  ? 'bg-gradient-to-r from-indigo-600/20 to-violet-600/20 text-indigo-400 border border-indigo-500/20'
+                  : 'text-slate-400 hover:text-white border border-transparent'
+              }`}
+            >
+              <Package className="w-4 h-4" />
+              <span>{t.inventoryTab}</span>
+            </button>
+            <button
               onClick={() => setActiveView('profile')}
               className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
                 activeView === 'profile'
@@ -1179,6 +1274,14 @@ export default function App() {
             language={language} 
             currentUserEmail={userEmail} 
             onBack={() => setActiveView('dashboard')}
+          />
+        ) : activeView === 'inventory' ? (
+          <InventoryManagement
+            tenant={activeTenant}
+            language={language}
+            userEmail={userEmail}
+            addNotification={addNotification}
+            onUpdateTenantProducts={handleUpdateTenantProducts}
           />
         ) : (
           <>
@@ -1295,6 +1398,7 @@ export default function App() {
                         onExportCSV={handleExportCSV}
                         activeTenantName={activeTenant.name}
                         language={language}
+                        summary={summary}
                       />
                     </div>
                   </div>

@@ -235,7 +235,8 @@ export default function RegisterTenantModal({
           },
           salesRecords: parsedSalesRecords,
           crmDeals: parsedCrmDeals,
-          dbMapping: customDbMapping
+          dbMapping: customDbMapping,
+          localSchema: localFileSchema
         }),
       });
 

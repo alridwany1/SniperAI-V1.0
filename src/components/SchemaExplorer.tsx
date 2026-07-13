@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'motion/react';
 import { 
   Database, 
@@ -87,10 +87,13 @@ export default function SchemaExplorer({
     crm: { table: '', id: '', customerName: '', value: '', status: '', lastUpdated: '' }
   });
 
+  const initializedRef = useRef(false);
+
   // Extract initial mapping if dbMapping is not provided
   useEffect(() => {
     if (dbMapping && Object.keys(dbMapping).length > 0) {
       setLocalMapping(dbMapping);
+      initializedRef.current = true;
     } else if (tables.length > 0) {
       const mapping: any = {
         sales: { table: '', date: '', product: '', campaign: '', revenue: '', units: '', cost: '' },
@@ -119,9 +122,11 @@ export default function SchemaExplorer({
           });
         }
       });
+      initializedRef.current = true;
       setLocalMapping(mapping);
+      onChangeMapping?.(mapping);
     }
-  }, [dbMapping, analysis]);
+  }, [analysis, dbMapping]);
 
   if (!tables.length) {
     return (
@@ -407,7 +412,7 @@ export default function SchemaExplorer({
           </div>
 
           <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
-            {activeTable.columns.map((col) => {
+            {activeTable.columns.map((col, colIdx) => {
               const isColHovered = hoveredCol === col.columnName;
               
               // Figure out active mapping display for column
@@ -430,7 +435,7 @@ export default function SchemaExplorer({
 
               return (
                 <div
-                  key={col.columnName}
+                  key={`${col.columnName}-${colIdx}`}
                   onMouseEnter={() => setHoveredCol(col.columnName)}
                   onMouseLeave={() => setHoveredCol(null)}
                   className={`border rounded-xl p-3 transition-all relative group ${
@@ -541,8 +546,8 @@ export default function SchemaExplorer({
                           className="bg-slate-950 border border-slate-800 text-slate-200 text-[10px] font-mono rounded-lg px-2 py-1 focus:border-indigo-500 focus:outline-none w-full"
                         >
                           <option value="">{isRtl ? '-- اختر عموداً --' : '-- Choose column --'}</option>
-                          {activeTable.columns.map(c => (
-                            <option key={c.columnName} value={c.columnName}>{c.columnName}</option>
+                          {activeTable.columns.map((c, cIdx) => (
+                            <option key={`${c.columnName}-${cIdx}`} value={c.columnName}>{c.columnName}</option>
                           ))}
                         </select>
                       ) : (
@@ -607,8 +612,8 @@ export default function SchemaExplorer({
                           className="bg-slate-950 border border-slate-800 text-slate-200 text-[10px] font-mono rounded-lg px-2 py-1 focus:border-indigo-500 focus:outline-none w-full"
                         >
                           <option value="">{isRtl ? '-- اختر عموداً --' : '-- Choose column --'}</option>
-                          {activeTable.columns.map(c => (
-                            <option key={c.columnName} value={c.columnName}>{c.columnName}</option>
+                          {activeTable.columns.map((c, cIdx) => (
+                            <option key={`${c.columnName}-${cIdx}`} value={c.columnName}>{c.columnName}</option>
                           ))}
                         </select>
                       ) : (

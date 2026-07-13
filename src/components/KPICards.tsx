@@ -1,6 +1,6 @@
 import React from 'react';
 import { MetricSummary, Tenant } from '../types';
-import { DollarSign, Percent, ShoppingBag, TrendingUp, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react';
+import { DollarSign, Percent, ShoppingBag, TrendingUp, AlertTriangle, ChevronLeft, ChevronRight, Package } from 'lucide-react';
 import { translations, Language } from '../utils/translations';
 import { getCurrencySymbol } from '../utils/currency';
 import AnimatedCounter from './AnimatedCounter';
@@ -172,6 +172,22 @@ export default function KPICards({ summary, activeTenant, language }: KPICardsPr
       icon: <AlertTriangle className="w-4 h-4" />,
       iconColorClass: anomalies.length > 0 ? 'text-amber-400 animate-pulse' : 'text-slate-500',
       bgGradient: 'from-amber-600/5 to-transparent border-slate-800/80',
+    },
+    {
+      id: 'kpi-inventory-value',
+      label: language === 'ar' ? 'قيمة مخزون المستودع' : 'Warehouse Stock Capital',
+      value: summary.totalInventoryValue ?? 0,
+      formatter: (val: number) => `${symbol}${val.toLocaleString()}`,
+      trend: [],
+      color: '#c084fc',
+      status: language === 'ar' 
+        ? `${summary.lowStockAlertsCount ?? 0} تنبيهات نقص` 
+        : `${summary.lowStockAlertsCount ?? 0} items low stock`,
+      statusDesc: '',
+      statusColor: (summary.lowStockAlertsCount ?? 0) > 0 ? 'text-amber-400 font-semibold' : 'text-slate-400',
+      icon: <Package className="w-4 h-4" />,
+      iconColorClass: 'text-fuchsia-400',
+      bgGradient: 'from-fuchsia-600/10 to-transparent border-fuchsia-900/40',
     }
   ];
 
@@ -205,9 +221,9 @@ export default function KPICards({ summary, activeTenant, language }: KPICardsPr
       setSlideDirection(isRtl ? -1 : 1);
       setActiveIndex((prev) => {
         if (isRtl) {
-          return prev > 0 ? prev - 1 : 4;
+          return prev > 0 ? prev - 1 : cards.length - 1;
         } else {
-          return prev < 4 ? prev + 1 : 0;
+          return prev < cards.length - 1 ? prev + 1 : 0;
         }
       });
     } else if (isRightSwipe) {
@@ -215,9 +231,9 @@ export default function KPICards({ summary, activeTenant, language }: KPICardsPr
       setSlideDirection(isRtl ? 1 : -1);
       setActiveIndex((prev) => {
         if (isRtl) {
-          return prev < 4 ? prev + 1 : 0;
+          return prev < cards.length - 1 ? prev + 1 : 0;
         } else {
-          return prev > 0 ? prev - 1 : 4;
+          return prev > 0 ? prev - 1 : cards.length - 1;
         }
       });
     }
@@ -225,12 +241,12 @@ export default function KPICards({ summary, activeTenant, language }: KPICardsPr
 
   const nextCard = () => {
     setSlideDirection(1);
-    setActiveIndex((prev) => (prev < 4 ? prev + 1 : 0));
+    setActiveIndex((prev) => (prev < cards.length - 1 ? prev + 1 : 0));
   };
 
   const prevCard = () => {
     setSlideDirection(-1);
-    setActiveIndex((prev) => (prev > 0 ? prev - 1 : 4));
+    setActiveIndex((prev) => (prev > 0 ? prev - 1 : cards.length - 1));
   };
 
   // Motion variants for slide transition
@@ -359,12 +375,12 @@ export default function KPICards({ summary, activeTenant, language }: KPICardsPr
           <span className="animate-pulse">
             {language === 'ar' ? '← اسحب لليسار أو اليمين لتصفح المؤشرات →' : '← Swipe left or right to switch metrics →'}
           </span>
-          <span>{activeIndex + 1} / 5</span>
+          <span>{activeIndex + 1} / {cards.length}</span>
         </div>
       </div>
 
       {/* Desktop Grid View */}
-      <div id="kpi-cards-desktop-grid" className="hidden md:grid grid-cols-2 lg:grid-cols-5 gap-4">
+      <div id="kpi-cards-desktop-grid" className="hidden md:grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
         {cards.map((card) => (
           <div 
             key={card.id}

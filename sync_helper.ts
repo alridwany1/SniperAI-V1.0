@@ -20,6 +20,7 @@ export async function syncToPostgres(tenant: Tenant, sales: SalesRecord[], crmDe
   const client = new Client({ connectionString, ssl: { rejectUnauthorized: false } });
   try {
     await client.connect();
+    await client.query("SET client_encoding TO 'UTF8'");
     
     await client.query(`
       CREATE TABLE IF NOT EXISTS sales_records (

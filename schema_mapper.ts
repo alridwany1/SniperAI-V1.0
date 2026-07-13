@@ -9,6 +9,7 @@ export async function introspectSchema(connectionString: string) {
   const client = new Client({ connectionString, ssl: { rejectUnauthorized: false } });
   try {
     await client.connect();
+    await client.query("SET client_encoding TO 'UTF8'");
     const res = await client.query(`
       SELECT table_name, column_name, data_type
       FROM information_schema.columns

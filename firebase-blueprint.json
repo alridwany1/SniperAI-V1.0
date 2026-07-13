@@ -96,6 +96,23 @@
           }
         }
       }
+    },
+    "InventoryItem": {
+      "title": "InventoryItem",
+      "description": "Enterprise tenant inventory item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "sku": { "type": "string" },
+        "productName": { "type": "string" },
+        "stockLevel": { "type": "number" },
+        "safetyStock": { "type": "number" },
+        "unitCost": { "type": "number" },
+        "unitPrice": { "type": "number" },
+        "supplier": { "type": "string" },
+        "lastRestocked": { "type": "string" }
+      },
+      "required": ["id", "sku", "productName", "stockLevel", "safetyStock", "unitCost", "unitPrice"]
     }
   },
   "firestore": {
@@ -114,6 +131,10 @@
     "/chat_histories/{docId}": {
       "schema": "ChatHistory",
       "description": "Contains user conversation histories for the AI interface"
+    },
+    "/inventory/{tenantId}/items/{itemId}": {
+      "schema": "InventoryItem",
+      "description": "Contains inventory items per tenant"
     }
   }
 }

@@ -21,6 +21,7 @@ export interface Tenant {
   dataSource?: DataSourceConfig;
   schemaMappings?: SchemaMapping[];
   dbMapping?: any;
+  localSchema?: any;
 }
 
 export interface DataSourceConfig {
@@ -51,6 +52,9 @@ export interface MetricSummary {
   salesCount: number;
   anomalies: SalesRecord[];
   productDistribution: { name: string; value: number }[];
+  totalInventoryValue?: number;
+  lowStockAlertsCount?: number;
+  outOfStockAlertsCount?: number;
   trends?: {
     revenue: number[];
     profit: number[];
@@ -127,4 +131,17 @@ export interface AppNotification {
     anomalyReason?: string;
   };
 }
+
+export interface InventoryItem {
+  id: string;
+  sku: string;
+  productName: string;
+  stockLevel: number;
+  safetyStock: number;
+  unitCost: number;
+  unitPrice: number;
+  supplier: string;
+  lastRestocked: string;
+}
+
 

@@ -3,6 +3,8 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+dotenv.config();
+
 import { Tenant, SalesRecord, MetricSummary, ForecastRecord, ChatMessage, CRMDeal, SyncHistoryEntry } from "./src/types.js";
 import { Client } from "pg";
 import { introspectSchema, mapSchemaWithAI, analyzeAndRouteSchemaWithAI } from "./schema_mapper.js";
@@ -10,13 +12,33 @@ import { initializeApp } from "firebase/app";
 import { getFirestore, collection, doc, getDocs, getDoc, setDoc, deleteDoc } from "firebase/firestore";
 import fs from "fs";
 
-const firebaseConfig = JSON.parse(fs.readFileSync(path.join(process.cwd(), "firebase-applet-config.json"), "utf8"));
+let firebaseConfig: any;
+try {
+  firebaseConfig = JSON.parse(fs.readFileSync(path.join(process.cwd(), "firebase-applet-config.json"), "utf8"));
+} catch (e) {
+  firebaseConfig = {
+    apiKey: process.env.FIREBASE_API_KEY || "AIzaSyBWqUM5yEJg_3-VSfRQmNliPj9HUT_cn0c",
+    authDomain: `${process.env.FIREBASE_PROJECT_ID || "project-9b5d1c9a-a93c-4349-b04"}.firebaseapp.com`,
+    projectId: process.env.FIREBASE_PROJECT_ID || "project-9b5d1c9a-a93c-4349-b04",
+    appId: process.env.FIREBASE_APP_ID || "1:322173143738:web:9114c8ef9e1b1d4de7d083",
+    firestoreDatabaseId: process.env.FIREBASE_DATABASE_ID || "ai-studio-sniperaiv21-8ee02038-98dc-42b7-9275-3cf55e6ffb8d"
+  };
+}
+
 const firebaseApp = initializeApp(firebaseConfig);
-const db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
+const db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId || "default");
+
 const DB_MAPPING_CACHE = new Map<string, any>();
 
+function cleanObject<T>(obj: T): T {
+  if (obj === null || obj === undefined) return null as any;
+  return JSON.parse(JSON.stringify(obj, (key, value) => {
+    return value === undefined ? undefined : value;
+  }));
+}
+
 async function getDynamicDBMapping(connectionString: string, tenantId: string) {
-  const tenant = TENANTS.find(t => t.id === tenantId);
+  const tenant = await getTenantById(tenantId);
   if (tenant && tenant.dbMapping && Object.keys(tenant.dbMapping).length > 0) {
     return tenant.dbMapping;
   }
@@ -40,29 +62,24 @@ async function getDynamicDBMapping(connectionString: string, tenantId: string) {
     ]
   };
 
-  if (connectionString.includes('.internal')) {
-    try {
-      const mapping = await mapSchemaWithAI(mockSchema);
-      DB_MAPPING_CACHE.set(tenantId, mapping);
-      return mapping;
-    } catch (aiErr) {
-      return null;
-    }
-  }
-
   try {
     const schema = await introspectSchema(connectionString);
     const mapping = await mapSchemaWithAI(schema);
     DB_MAPPING_CACHE.set(tenantId, mapping);
     return mapping;
   } catch (e: any) {
-    try {
-      const mapping = await mapSchemaWithAI(mockSchema);
-      DB_MAPPING_CACHE.set(tenantId, mapping);
-      return mapping;
-    } catch (aiErr) {
-      return null;
+    const isDefault = tenantId === 'apex-logistics' || tenantId === 'nova-retail' || tenantId === 'vortex-saas';
+    if (isDefault) {
+      try {
+        const mapping = await mapSchemaWithAI(mockSchema);
+        DB_MAPPING_CACHE.set(tenantId, mapping);
+        return mapping;
+      } catch (aiErr) {
+        return null;
+      }
     }
+    console.error(`Database schema introspection failed for custom tenant ${tenantId}:`, e.message);
+    return null;
   }
 }
 import { MongoClient } from "mongodb";
@@ -105,7 +122,8 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Initialize Gemini Client
 const ai = new GoogleGenAI({
@@ -119,6 +137,22 @@ const ai = new GoogleGenAI({
 
 // Mock Tenants Data
 const TENANTS: Tenant[] = [];
+
+async function getTenantById(tenantId: string): Promise<Tenant | undefined> {
+  let tenant = TENANTS.find(t => t.id === tenantId);
+  if (!tenant) {
+    try {
+      const tenantDoc = await getDoc(doc(db, 'tenants', tenantId));
+      if (tenantDoc.exists()) {
+        tenant = tenantDoc.data() as Tenant;
+        TENANTS.push(tenant);
+      }
+    } catch (e) {
+      console.error(`Failed to load tenant ${tenantId} from Firestore:`, e);
+    }
+  }
+  return tenant;
+}
 
 // In-memory Sales Database & CRM state
 const SALES_DB: Record<string, SalesRecord[]> = {};
@@ -386,12 +420,9 @@ function buildConnectionString(ds: any): string {
 }
 
 async function getRawRecords(tenantId: string): Promise<SalesRecord[]> {
-  const tenant = TENANTS.find(t => t.id === tenantId);
+  const tenant = await getTenantById(tenantId);
   if (tenant?.dataSource?.provider === 'PostgreSQL') {
     const ds = tenant.dataSource;
-    if (ds.host && ds.host.includes('.internal')) {
-      return SALES_DB[tenantId] || [];
-    }
     const connectionString = buildConnectionString(ds);
     
     const mapping = await getDynamicDBMapping(connectionString, tenantId);
@@ -400,19 +431,19 @@ async function getRawRecords(tenantId: string): Promise<SalesRecord[]> {
       const client = new Client({ connectionString, ssl: { rejectUnauthorized: false } });
       try {
         await client.connect();
+        await client.query("SET client_encoding TO 'UTF8'");
         const sales = mapping.sales;
         
-        // Check if table exists in postgres
-        const tableCheck = await client.query(`
-          SELECT EXISTS (
-            SELECT FROM information_schema.tables 
-            WHERE table_schema = 'public' 
-            AND table_name = $1
-          );
-        `, [sales.table]);
+        // Robust check if table exists in postgres
+        let exists = true;
+        try {
+          await client.query(`SELECT 1 FROM "${sales.table}" LIMIT 1`);
+        } catch (tableErr) {
+          exists = false;
+        }
         
-        if (!tableCheck.rows[0]?.exists) {
-          console.error(`PostgreSQL sales table "${sales.table}" does not exist.`);
+        if (!exists) {
+          console.error(`PostgreSQL sales table "${sales.table}" does not exist or is not accessible.`);
           return [];
         }
         
@@ -420,7 +451,7 @@ async function getRawRecords(tenantId: string): Promise<SalesRecord[]> {
         const colsQuery = await client.query(`
           SELECT column_name 
           FROM information_schema.columns 
-          WHERE table_name = $1 AND table_schema = 'public'
+          WHERE table_name = $1
         `, [sales.table]);
         const cols = colsQuery.rows.map(r => r.column_name.toLowerCase());
         const hasTenantId = cols.includes('tenant_id') || cols.includes('tenantid');
@@ -573,12 +604,9 @@ async function getRawRecords(tenantId: string): Promise<SalesRecord[]> {
 }
 
 async function getCRMRecords(tenantId: string): Promise<CRMDeal[]> {
-  const tenant = TENANTS.find(t => t.id === tenantId);
+  const tenant = await getTenantById(tenantId);
   if (tenant?.dataSource?.provider === 'PostgreSQL') {
     const ds = tenant.dataSource;
-    if (ds.host && ds.host.includes('.internal')) {
-      return CRM_DB[tenantId] || [];
-    }
     const connectionString = buildConnectionString(ds);
     
     const mapping = await getDynamicDBMapping(connectionString, tenantId);
@@ -587,19 +615,19 @@ async function getCRMRecords(tenantId: string): Promise<CRMDeal[]> {
       const client = new Client({ connectionString, ssl: { rejectUnauthorized: false } });
       try {
         await client.connect();
+        await client.query("SET client_encoding TO 'UTF8'");
         const crm = mapping.crm;
         
-        // Check if table exists in postgres
-        const tableCheck = await client.query(`
-          SELECT EXISTS (
-            SELECT FROM information_schema.tables 
-            WHERE table_schema = 'public' 
-            AND table_name = $1
-          );
-        `, [crm.table]);
+        // Robust check if table exists in postgres
+        let exists = true;
+        try {
+          await client.query(`SELECT 1 FROM "${crm.table}" LIMIT 1`);
+        } catch (tableErr) {
+          exists = false;
+        }
         
-        if (!tableCheck.rows[0]?.exists) {
-          console.error(`PostgreSQL CRM table "${crm.table}" does not exist.`);
+        if (!exists) {
+          console.error(`PostgreSQL CRM table "${crm.table}" does not exist or is not accessible.`);
           return [];
         }
         
@@ -607,7 +635,7 @@ async function getCRMRecords(tenantId: string): Promise<CRMDeal[]> {
         const colsQuery = await client.query(`
           SELECT column_name 
           FROM information_schema.columns 
-          WHERE table_name = $1 AND table_schema = 'public'
+          WHERE table_name = $1
         `, [crm.table]);
         const cols = colsQuery.rows.map(r => r.column_name.toLowerCase());
         const hasTenantId = cols.includes('tenant_id') || cols.includes('tenantid');
@@ -826,6 +854,30 @@ async function calculateFilteredMetrics(tenantId: string, campaign: string, prod
     trendDates.unshift("");
   }
 
+  // Load real-time inventory statistics from Firestore
+  let totalInventoryValue = 0;
+  let lowStockAlertsCount = 0;
+  let outOfStockAlertsCount = 0;
+
+  try {
+    const invSnapshot = await getDocs(collection(db, 'inventory', tenantId, 'items'));
+    invSnapshot.docs.forEach(docDoc => {
+      const item = docDoc.data();
+      const stockLevel = Number(item.stockLevel) || 0;
+      const unitCost = Number(item.unitCost) || 0;
+      const safetyStock = Number(item.safetyStock) || 0;
+
+      totalInventoryValue += stockLevel * unitCost;
+      if (stockLevel === 0) {
+        outOfStockAlertsCount++;
+      } else if (stockLevel <= safetyStock) {
+        lowStockAlertsCount++;
+      }
+    });
+  } catch (e) {
+    console.error(`Failed to load inventory for metrics for tenant ${tenantId}:`, e);
+  }
+
   return {
     totalRevenue: Math.round(totalRevenue * 100) / 100,
     totalCost: Math.round(totalCost * 100) / 100,
@@ -835,6 +887,9 @@ async function calculateFilteredMetrics(tenantId: string, campaign: string, prod
     salesCount,
     anomalies,
     productDistribution,
+    totalInventoryValue: Math.round(totalInventoryValue * 100) / 100,
+    lowStockAlertsCount,
+    outOfStockAlertsCount,
     trends: {
       revenue: trendRevenue,
       profit: trendProfit,
@@ -859,15 +914,21 @@ app.get("/api/tenants", async (req, res) => {
       const data = docDoc.data() as Tenant;
       
       // Normalize loaded data
-      if (!data.products || data.products.length === 0) {
-        data.products = [
-          { name: 'Standard Product A', price: 150, costOfGoods: 90 },
-          { name: 'Premium Service B', price: 750, costOfGoods: 450 },
-          { name: 'Enterprise License C', price: 3200, costOfGoods: 1500 }
-        ];
-      }
-      if (!data.campaigns || data.campaigns.length === 0) {
-        data.campaigns = ['Q3 Kickoff Initiative', 'Summer Flash Sale', 'Direct Outreach Focus'];
+      const isDefault = data.id === 'apex-logistics' || data.id === 'nova-retail' || data.id === 'vortex-saas';
+      if (isDefault) {
+        if (!data.products || data.products.length === 0) {
+          data.products = [
+            { name: 'Standard Product A', price: 150, costOfGoods: 90 },
+            { name: 'Premium Service B', price: 750, costOfGoods: 450 },
+            { name: 'Enterprise License C', price: 3200, costOfGoods: 1500 }
+          ];
+        }
+        if (!data.campaigns || data.campaigns.length === 0) {
+          data.campaigns = ['Q3 Kickoff Initiative', 'Summer Flash Sale', 'Direct Outreach Focus'];
+        }
+      } else {
+        if (!data.products) data.products = [];
+        if (!data.campaigns) data.campaigns = [];
       }
       
       loadedTenants.push(data);
@@ -880,7 +941,6 @@ app.get("/api/tenants", async (req, res) => {
         TENANTS.push(data);
       }
       
-      const isDefault = data.id === 'apex-logistics' || data.id === 'nova-retail' || data.id === 'vortex-saas';
       if (isDefault) {
         if (!SALES_DB[data.id]) {
           SALES_DB[data.id] = generateSalesRecords(data);
@@ -961,7 +1021,7 @@ app.get("/api/tenants", async (req, res) => {
       ];
       
       for (const d of defaults) {
-        await setDoc(doc(db, 'tenants', d.id), d);
+        await setDoc(doc(db, 'tenants', d.id), cleanObject(d));
         TENANTS.push(d);
         SALES_DB[d.id] = generateSalesRecords(d);
         CRM_DB[d.id] = generateCRMDeals(d.id);
@@ -1094,6 +1154,7 @@ app.post("/api/tenants/test-connection", async (req, res) => {
         ssl: { rejectUnauthorized: false }
       });
       await client.connect();
+      await client.query("SET client_encoding TO 'UTF8'");
       await client.query('SELECT 1');
       await client.end();
 
@@ -1298,66 +1359,8 @@ app.post("/api/auth/verify-code", (req, res) => {
 
 
 async function syncToPostgres(tenant: Tenant, sales: SalesRecord[], crmDeals: CRMDeal[]) {
-  if (!tenant.dataSource || tenant.dataSource.provider !== 'PostgreSQL') return;
-  const ds = tenant.dataSource;
-  const connectionString = buildConnectionString(ds);
-  
-  const client = new Client({ connectionString, ssl: { rejectUnauthorized: false } });
-  try {
-    await client.connect();
-    
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS sales_records (
-        id SERIAL PRIMARY KEY,
-        tenant_id VARCHAR(255),
-        date VARCHAR(10),
-        product VARCHAR(255),
-        campaign VARCHAR(255),
-        revenue NUMERIC,
-        units INTEGER,
-        cost NUMERIC,
-        is_anomaly BOOLEAN,
-        anomaly_reason TEXT
-      )
-    `);
-    
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS crm_deals (
-        id VARCHAR(255) PRIMARY KEY,
-        tenant_id VARCHAR(255),
-        customer_name VARCHAR(255),
-        value NUMERIC,
-        status VARCHAR(50),
-        last_updated VARCHAR(50)
-      )
-    `);
-
-    const res = await client.query(`SELECT COUNT(*) FROM sales_records WHERE tenant_id = $1`, [tenant.id]);
-    if (parseInt(res.rows[0].count) === 0) {
-      for (const r of sales) {
-        await client.query(
-          `INSERT INTO sales_records (tenant_id, date, product, campaign, revenue, units, cost, is_anomaly, anomaly_reason) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-          [tenant.id, r.date, r.product, r.campaign, r.revenue, r.units, r.cost, r.isAnomaly || false, r.anomalyReason || '']
-        );
-      }
-    }
-    
-    const resCrm = await client.query(`SELECT COUNT(*) FROM crm_deals WHERE tenant_id = $1`, [tenant.id]);
-    if (parseInt(resCrm.rows[0].count) === 0) {
-      for (const r of crmDeals) {
-        await client.query(
-          `INSERT INTO crm_deals (id, tenant_id, customer_name, value, status, last_updated) VALUES ($1, $2, $3, $4, $5, $6)`,
-          [r.id, tenant.id, r.customerName, r.value, r.status, r.lastUpdated]
-        );
-      }
-    }
-  } catch(e: any) {
-    // Fallback silently to local database store
-  } finally {
-    try {
-      await client.end();
-    } catch (endErr) {}
-  }
+  // Disabled: We do not modify the user's remote database.
+  return;
 }
 
 // Register a new tenant
@@ -1380,27 +1383,12 @@ app.post("/api/tenants", async (req, res) => {
   const isArabic = /[\u0600-\u06FF]/.test(nameToTest);
   const isSpanish = (dataSource?.databaseName || "").toLowerCase().includes("es") || (dataSource?.databaseName || "").toLowerCase().includes("venta") || (dataSource?.databaseName || "").toLowerCase().includes("registro");
 
-  const products = isArabic ? [
-    { name: 'المنتج القياسي أ', price: 150, costOfGoods: 90 },
-    { name: 'الخدمة المميزة ب', price: 750, costOfGoods: 450 },
-    { name: 'ترخيص المؤسسات ج', price: 3200, costOfGoods: 1500 }
-  ] : isSpanish ? [
-    { name: 'Producto Estándar A', price: 150, costOfGoods: 90 },
-    { name: 'Servicio Premium B', price: 750, costOfGoods: 450 },
-    { name: 'Licencia Corporativa C', price: 3200, costOfGoods: 1500 }
-  ] : [
-    { name: 'Standard Product A', price: 150, costOfGoods: 90 },
-    { name: 'Premium Service B', price: 750, costOfGoods: 450 },
-    { name: 'Enterprise License C', price: 3200, costOfGoods: 1500 }
-  ];
+  const salesRecords = req.body.salesRecords || [];
+  const uniqueProducts = Array.from(new Set(salesRecords.map((r: any) => r.product).filter(Boolean))) as string[];
+  const uniqueCampaigns = Array.from(new Set(salesRecords.map((r: any) => r.campaign).filter(Boolean))) as string[];
 
-  const campaigns = isArabic ? [
-    'مبادرة انطلاق الربع الثالث', 'تخفيضات الصيف الكبرى', 'حملة التواصل المباشر'
-  ] : isSpanish ? [
-    'Iniciativa del Tercer Trimestre', 'Venta Flash de Verano', 'Enfoque de Alcance Directo'
-  ] : [
-    'Q3 Kickoff Initiative', 'Summer Flash Sale', 'Direct Outreach Focus'
-  ];
+  const products = uniqueProducts.map(pName => ({ name: pName, price: 0, costOfGoods: 0 }));
+  const campaigns = uniqueCampaigns;
 
   const newTenant: Tenant = {
     id: finalId,
@@ -1418,13 +1406,14 @@ app.post("/api/tenants", async (req, res) => {
       databaseName: dataSource.databaseName?.trim(),
       username: dataSource.username?.trim()
     } : undefined,
-    dbMapping: req.body.dbMapping || undefined
+    dbMapping: req.body.dbMapping || undefined,
+    localSchema: req.body.localSchema || undefined
   };
 
   TENANTS.push(newTenant);
 
   try {
-    await setDoc(doc(db, 'tenants', newTenant.id), newTenant);
+    await setDoc(doc(db, 'tenants', newTenant.id), cleanObject(newTenant));
   } catch (e) {
     console.error("Failed to save new tenant to Firestore:", e);
   }
@@ -1438,19 +1427,19 @@ app.post("/api/tenants", async (req, res) => {
 
   if (salesToSave.length > 0 || crmToSave.length > 0) {
     try {
-      await setDoc(doc(db, 'tenant_data', newTenant.id), {
+      await setDoc(doc(db, 'tenant_data', newTenant.id), cleanObject({
         sales: salesToSave,
         crm: crmToSave
-      });
+      }));
     } catch (e) {
       console.error("Failed to save tenant records to Firestore:", e);
     }
   }
 
-  // Only sync to external Postgres database if they actually configured PostgreSQL and have records
-  if (newTenant.dataSource?.provider === 'PostgreSQL' && (salesToSave.length > 0 || crmToSave.length > 0)) {
-    syncToPostgres(newTenant, SALES_DB[newTenant.id], CRM_DB[newTenant.id]).catch(e => console.error(e));
-  }
+  // syncToPostgres is disabled: We do not want to auto-create 'sales_records' or modify the user's remote database
+  // if (newTenant.dataSource?.provider === 'PostgreSQL' && (salesToSave.length > 0 || crmToSave.length > 0)) {
+  //   syncToPostgres(newTenant, SALES_DB[newTenant.id], CRM_DB[newTenant.id]).catch(e => console.error(e));
+  // }
 
   console.log(`Onboarded new tenant: ${newTenant.name} (${newTenant.id})`);
   res.status(201).json(newTenant);
@@ -1461,10 +1450,12 @@ app.put("/api/tenants/:id", async (req, res) => {
   const { id } = req.params;
   const { name, industry, currency, description, schemaMappings, dbMapping } = req.body;
   
-  const tenantIndex = TENANTS.findIndex(t => t.id === id);
-  if (tenantIndex === -1) {
+  const tenant = await getTenantById(id);
+  if (!tenant) {
     return res.status(404).json({ error: "Tenant not found" });
   }
+  
+  const tenantIndex = TENANTS.findIndex(t => t.id === id);
 
   if (!name || !industry) {
     return res.status(400).json({ error: "Missing tenant name or industry" });
@@ -1482,14 +1473,14 @@ app.put("/api/tenants/:id", async (req, res) => {
   };
 
   try {
-    await setDoc(doc(db, 'tenants', id), {
+    await setDoc(doc(db, 'tenants', id), cleanObject({
       name: name.trim(),
       industry: industry.trim(),
       currency: currency || TENANTS[tenantIndex].currency || 'USD',
       description: description !== undefined ? description.trim() : TENANTS[tenantIndex].description,
       schemaMappings: schemaMappings || [],
       dbMapping: dbMapping !== undefined ? dbMapping : (TENANTS[tenantIndex].dbMapping || null)
-    }, { merge: true });
+    }), { merge: true });
   } catch (e) {
     console.error(`Failed to update tenant ${id} in firestore`, e);
     return res.status(500).json({ error: "Failed to persist tenant changes" });
@@ -1531,7 +1522,7 @@ app.post("/api/tenants/bulk-delete", async (req, res) => {
 // Connection Diagnostic endpoint
 app.post("/api/tenants/:id/diagnostics", async (req, res) => {
   const { id } = req.params;
-  const tenant = TENANTS.find(t => t.id === id);
+  const tenant = await getTenantById(id);
   if (!tenant) {
     return res.status(404).json({ error: "Tenant not found" });
   }
@@ -1693,7 +1684,7 @@ app.post("/api/tenants/:id/diagnostics", async (req, res) => {
 // Refresh schema mapping
 app.post("/api/tenants/:id/refresh-schema", async (req, res) => {
   const { id } = req.params;
-  const tenant = TENANTS.find(t => t.id === id);
+  const tenant = await getTenantById(id);
   if (!tenant) {
     return res.status(404).json({ error: "Tenant not found" });
   }
@@ -1761,44 +1752,23 @@ function applyMappingToAnalysis(analysis: any, dbMapping: any) {
 app.get("/api/tenants/:id/schema", async (req, res) => {
   const { id } = req.params;
   const { lang } = req.query;
-  const tenant = TENANTS.find(t => t.id === id);
+  const tenant = await getTenantById(id);
   if (!tenant) {
     return res.status(404).json({ error: "Tenant not found" });
   }
 
   const displayLanguage = (lang === 'ar' ? 'ar' : 'en') as 'en' | 'ar';
   const dbMapping = tenant.dbMapping || null;
-  let schema: any = null;
+  let schema: any = tenant.localSchema || null;
 
   const ds = tenant.dataSource;
-  if (ds) {
+  if (!schema && ds) {
     if (ds.provider === 'PostgreSQL') {
-      if (ds.host && ds.host.includes('.internal')) {
-        schema = {
-          "sales_ledger": [
-            { "column": "record_id", "type": "integer" },
-            { "column": "sale_date", "type": "date" },
-            { "column": "product_name", "type": "varchar" },
-            { "column": "marketing_campaign", "type": "varchar" },
-            { "column": "gross_revenue", "type": "numeric" },
-            { "column": "units_sold", "type": "integer" },
-            { "column": "cost_of_goods", "type": "numeric" }
-          ],
-          "crm_pipeline": [
-            { "column": "opportunity_id", "type": "varchar" },
-            { "column": "client_name", "type": "varchar" },
-            { "column": "deal_value", "type": "numeric" },
-            { "column": "pipeline_status", "type": "varchar" },
-            { "column": "last_updated_at", "type": "timestamp" }
-          ]
-        };
-      } else {
-        const connectionString = buildConnectionString(ds);
-        try {
-          schema = await introspectSchema(connectionString);
-        } catch (e: any) {
-          console.warn("Could not introspect PG schema, returning default fallback:", e.message);
-        }
+      const connectionString = buildConnectionString(ds);
+      try {
+        schema = await introspectSchema(connectionString);
+      } catch (e: any) {
+        console.warn("Could not introspect PG schema, returning default fallback:", e.message);
       }
     } else if (ds.provider === 'MongoDB') {
       schema = {
@@ -1813,25 +1783,29 @@ app.get("/api/tenants/:id/schema", async (req, res) => {
     }
   }
 
-  if (!schema) {
-    schema = {
-      "sales_records": [
-        { "column": "record_id", "type": "integer" },
-        { "column": "sale_date", "type": "date" },
-        { "column": "product_name", "type": "varchar" },
-        { "column": "marketing_campaign", "type": "varchar" },
-        { "column": "gross_revenue", "type": "numeric" },
-        { "column": "units_sold", "type": "integer" },
-        { "column": "cost_of_goods", "type": "numeric" }
-      ],
-      "crm_deals": [
-        { "column": "opportunity_id", "type": "varchar" },
-        { "column": "client_name", "type": "varchar" },
-        { "column": "deal_value", "type": "numeric" },
-        { "column": "pipeline_status", "type": "varchar" },
-        { "column": "last_updated_at", "type": "timestamp" }
-      ]
-    };
+  if (!schema || Object.keys(schema).length === 0) {
+    if (ds && ds.provider === 'PostgreSQL') {
+      schema = {}; // Return empty schema for real external database
+    } else {
+      schema = {
+        "sales_records": [
+          { "column": "record_id", "type": "integer" },
+          { "column": "sale_date", "type": "date" },
+          { "column": "product_name", "type": "varchar" },
+          { "column": "marketing_campaign", "type": "varchar" },
+          { "column": "gross_revenue", "type": "numeric" },
+          { "column": "units_sold", "type": "integer" },
+          { "column": "cost_of_goods", "type": "numeric" }
+        ],
+        "crm_deals": [
+          { "column": "opportunity_id", "type": "varchar" },
+          { "column": "client_name", "type": "varchar" },
+          { "column": "deal_value", "type": "numeric" },
+          { "column": "pipeline_status", "type": "varchar" },
+          { "column": "last_updated_at", "type": "timestamp" }
+        ]
+      };
+    }
   }
 
   try {
@@ -1877,7 +1851,7 @@ app.post("/api/query/run", async (req, res) => {
     return res.status(400).json({ success: false, error: "Missing tenant ID" });
   }
 
-  const tenant = TENANTS.find(t => t.id === tenantId);
+  const tenant = await getTenantById(tenantId);
   if (!tenant) {
     return res.status(404).json({ success: false, error: "Tenant not found" });
   }
@@ -1897,12 +1871,13 @@ app.post("/api/query/run", async (req, res) => {
   }
 
   const ds = tenant.dataSource;
-  if (ds && ds.provider === 'PostgreSQL' && (!ds.host || !ds.host.includes('.internal'))) {
+  if (ds && ds.provider === 'PostgreSQL') {
     // Run live query in Postgres!
     const connectionString = buildConnectionString(ds);
     const client = new Client({ connectionString, ssl: { rejectUnauthorized: false } });
     try {
       await client.connect();
+      await client.query("SET client_encoding TO 'UTF8'");
       const dbRes = await client.query(query);
       const executionTimeMs = Date.now() - startTime;
       
@@ -1935,62 +1910,76 @@ app.post("/api/query/run", async (req, res) => {
       tableName = structuredQuery.table;
     } else {
       // Simple parse of table name from raw SQL: SELECT ... FROM table_name
-      const fromMatch = query.match(/from\s+([a-zA-Z0-9_"]+)/i);
+      const fromMatch = query.match(/from\s+([^\s;]+)/i);
       if (fromMatch) {
         tableName = fromMatch[1].replace(/["'`]/g, '');
       }
     }
 
     const tNameLower = tableName.toLowerCase();
-    const isSales = tNameLower.includes("sales") || tNameLower.includes("ledger") || tNameLower.includes("سجل") || tNameLower.includes("مبيعات") || tNameLower.includes("venta");
-    const isCrm = tNameLower.includes("crm") || tNameLower.includes("deal") || tNameLower.includes("pipeline") || tNameLower.includes("عملاء") || tNameLower.includes("صفقات") || tNameLower.includes("cliente");
+    const isSales = tNameLower.includes("sales") || tNameLower.includes("ledger") || tNameLower.includes("سجل") || tNameLower.includes("مبيعات") || tNameLower.includes("venta") || (tenant.localSchema && Object.keys(tenant.localSchema).some(t => t.toLowerCase() === tNameLower && (t.toLowerCase().includes('sale') || t.toLowerCase().includes('ledger') || t.toLowerCase().includes('transaction') || t.toLowerCase().includes('مبيعات'))));
+    const isCrm = tNameLower.includes("crm") || tNameLower.includes("deal") || tNameLower.includes("pipeline") || tNameLower.includes("عملاء") || tNameLower.includes("صفقات") || tNameLower.includes("cliente") || (tenant.localSchema && Object.keys(tenant.localSchema).some(t => t.toLowerCase() === tNameLower && (t.toLowerCase().includes('crm') || t.toLowerCase().includes('deal') || t.toLowerCase().includes('lead') || t.toLowerCase().includes('عملاء'))));
 
     if (isSales) {
       const records = SALES_DB[tenantId] || [];
-      dataset = records.map((r, idx) => ({
-        id: idx + 1,
-        record_id: idx + 101,
-        transaction_id: idx + 101,
-        date: r.date,
-        sale_date: r.date,
-        order_date: r.date,
-        product: r.product,
-        product_name: r.product,
-        item_description: r.product,
-        campaign: r.campaign,
-        marketing_campaign: r.campaign,
-        promo_campaign: r.campaign,
-        revenue: r.revenue,
-        gross_revenue: r.revenue,
-        total_revenue: r.revenue,
-        units: r.units,
-        units_sold: r.units,
-        quantity_ordered: r.units,
-        cost: r.cost,
-        cost_of_goods: r.cost,
-        production_cost: r.cost,
-        is_anomaly: r.isAnomaly ? "TRUE" : "FALSE",
-        anomaly_reason: r.anomalyReason || ""
-      }));
+      const tableSchema = tenant.localSchema ? tenant.localSchema[Object.keys(tenant.localSchema).find(t => t.toLowerCase() === tNameLower) || ''] : null;
+      
+      dataset = records.map((r, idx) => {
+        if (tableSchema) {
+          const row: any = {};
+          tableSchema.forEach((col: any) => {
+            const cName = col.column;
+            const cLower = cName.toLowerCase();
+            if (['date', 'time', 'create', 'تاريخ', 'وقت'].some(kw => cLower.includes(kw))) row[cName] = r.date;
+            else if (['product', 'item', 'sku', 'منتج', 'سلعة'].some(kw => cLower.includes(kw))) row[cName] = r.product;
+            else if (['campaign', 'source', 'medium', 'حملة', 'مصدر'].some(kw => cLower.includes(kw))) row[cName] = r.campaign;
+            else if (['revenue', 'amount', 'price', 'total', 'إيراد', 'مبلغ', 'سعر', 'قيمة'].some(kw => cLower.includes(kw))) row[cName] = r.revenue;
+            else if (['unit', 'qty', 'quantity', 'count', 'كمية', 'عدد'].some(kw => cLower.includes(kw))) row[cName] = r.units;
+            else if (['cost', 'cogs', 'expense', 'تكلفة', 'مصاريف'].some(kw => cLower.includes(kw))) row[cName] = r.cost;
+            else if (cLower.includes('id') || cLower.includes('رقم') || cLower.includes('معرف')) row[cName] = idx + 1;
+            else row[cName] = '';
+          });
+          return row;
+        }
+        
+        return {
+          id: idx + 1,
+          date: r.date,
+          product: r.product,
+          campaign: r.campaign,
+          revenue: r.revenue,
+          units: r.units,
+          cost: r.cost,
+        };
+      });
     } else if (isCrm) {
       const deals = CRM_DB[tenantId] || [];
-      dataset = deals.map((d, idx) => ({
-        id: idx + 1,
-        deal_id: d.id,
-        opportunity_id: d.id,
-        customer_name: d.customerName,
-        client_name: d.customerName,
-        account_name: d.customerName,
-        value: d.value,
-        deal_value: d.value,
-        projected_value: d.value,
-        status: d.status,
-        pipeline_status: d.status,
-        stage_status: d.status,
-        last_updated: d.lastUpdated,
-        last_updated_at: d.lastUpdated,
-        updated_at: d.lastUpdated
-      }));
+      const tableSchema = tenant.localSchema ? tenant.localSchema[Object.keys(tenant.localSchema).find(t => t.toLowerCase() === tNameLower) || ''] : null;
+      
+      dataset = deals.map((d, idx) => {
+        if (tableSchema) {
+          const row: any = {};
+          tableSchema.forEach((col: any) => {
+            const cName = col.column;
+            const cLower = cName.toLowerCase();
+            if (['id', 'key', 'code', 'معرف', 'رقم'].some(kw => cLower.includes(kw))) row[cName] = d.id;
+            else if (['name', 'customer', 'client', 'contact', 'عميل', 'اسم'].some(kw => cLower.includes(kw))) row[cName] = d.customerName;
+            else if (['value', 'amount', 'worth', 'revenue', 'قيمة', 'مبلغ'].some(kw => cLower.includes(kw))) row[cName] = d.value;
+            else if (['status', 'stage', 'state', 'phase', 'حالة', 'مرحلة'].some(kw => cLower.includes(kw))) row[cName] = d.status;
+            else if (['update', 'date', 'time', 'تحديث', 'تاريخ'].some(kw => cLower.includes(kw))) row[cName] = d.lastUpdated;
+            else row[cName] = '';
+          });
+          return row;
+        }
+        
+        return {
+          id: d.id,
+          customerName: d.customerName,
+          value: d.value,
+          status: d.status,
+          lastUpdated: d.lastUpdated
+        };
+      });
     } else {
       dataset = [];
     }
@@ -2172,7 +2161,7 @@ app.post("/api/query/run", async (req, res) => {
 
 
 async function checkTableExistence(tenantId: string) {
-  const tenant = TENANTS.find(t => t.id === tenantId);
+  const tenant = await getTenantById(tenantId);
   const status = {
     isDbConnected: false,
     salesTableExists: true,
@@ -2184,44 +2173,37 @@ async function checkTableExistence(tenantId: string) {
 
   if (tenant?.dataSource?.provider === 'PostgreSQL') {
     const ds = tenant.dataSource;
-    if (ds.host && ds.host.includes('.internal')) {
-      status.isDbConnected = true;
-      status.salesTableName = 'sales_records';
-      status.crmTableName = 'crm_deals';
-      return status;
-    }
     const connectionString = buildConnectionString(ds);
     const client = new Client({ connectionString, ssl: { rejectUnauthorized: false } });
     try {
       await client.connect();
+      await client.query("SET client_encoding TO 'UTF8'");
       status.isDbConnected = true;
       
       const mapping = await getDynamicDBMapping(connectionString, tenantId);
       if (mapping) {
         if (mapping.sales && mapping.sales.table) {
           status.salesTableName = mapping.sales.table;
-          const sCheck = await client.query(`
-            SELECT EXISTS (
-              SELECT FROM information_schema.tables 
-              WHERE table_schema = 'public' 
-              AND table_name = $1
-            );
-          `, [mapping.sales.table]);
-          status.salesTableExists = sCheck.rows[0]?.exists === true;
+          let sExists = true;
+          try {
+            await client.query(`SELECT 1 FROM "${mapping.sales.table}" LIMIT 1`);
+          } catch (err) {
+            sExists = false;
+          }
+          status.salesTableExists = sExists;
         } else {
           status.salesTableExists = false;
         }
 
         if (mapping.crm && mapping.crm.table) {
           status.crmTableName = mapping.crm.table;
-          const cCheck = await client.query(`
-            SELECT EXISTS (
-              SELECT FROM information_schema.tables 
-              WHERE table_schema = 'public' 
-              AND table_name = $1
-            );
-          `, [mapping.crm.table]);
-          status.crmTableExists = cCheck.rows[0]?.exists === true;
+          let cExists = true;
+          try {
+            await client.query(`SELECT 1 FROM "${mapping.crm.table}" LIMIT 1`);
+          } catch (err) {
+            cExists = false;
+          }
+          status.crmTableExists = cExists;
         } else {
           status.crmTableExists = false;
         }
@@ -2236,8 +2218,17 @@ async function checkTableExistence(tenantId: string) {
     }
   } else {
     status.isDbConnected = true;
-    status.salesTableName = 'sales_records';
-    status.crmTableName = 'crm_deals';
+    let sName = 'sales_records';
+    let cName = 'crm_deals';
+    if (tenant?.localSchema) {
+      const keys = Object.keys(tenant.localSchema);
+      const salesKey = keys.find(k => k.toLowerCase().includes('sale') || k.toLowerCase().includes('ledger') || k.toLowerCase().includes('transaction') || k.toLowerCase().includes('invoice') || k.toLowerCase().includes('مبيعات') || k.toLowerCase().includes('عمليات') || k.toLowerCase().includes('فواتير'));
+      const crmKey = keys.find(k => k.toLowerCase().includes('crm') || k.toLowerCase().includes('deal') || k.toLowerCase().includes('pipeline') || k.toLowerCase().includes('lead') || k.toLowerCase().includes('opportunity') || k.toLowerCase().includes('عملاء') || k.toLowerCase().includes('صفقات') || k.toLowerCase().includes('فرص'));
+      if (salesKey) sName = salesKey;
+      if (crmKey) cName = crmKey;
+    }
+    status.salesTableName = sName;
+    status.crmTableName = cName;
   }
 
   return status;
@@ -2322,7 +2313,7 @@ app.post("/api/forecast", async (req, res) => {
       return res.status(400).json({ error: "Missing tenantId" });
     }
 
-    const tenant = TENANTS.find(t => t.id === tenantId);
+    const tenant = await getTenantById(tenantId);
     if (!tenant) {
       return res.status(404).json({ error: "Tenant not found" });
     }
@@ -2672,7 +2663,7 @@ app.post("/api/reports/strategic", async (req, res) => {
       return res.json({ report: REPORT_CACHE.get(cacheKey), cached: true });
     }
 
-    const tenant = TENANTS.find(t => t.id === tenantId);
+    const tenant = await getTenantById(tenantId);
     if (!tenant) {
       return res.status(404).json({ error: "Tenant not found" });
     }
@@ -2928,7 +2919,7 @@ app.post("/api/assistant/summarize", async (req, res) => {
       return res.status(400).json({ error: "Missing required parameter: tenantId" });
     }
 
-    const tenant = TENANTS.find(t => t.id === tenantId);
+    const tenant = await getTenantById(tenantId);
     if (!tenant) {
       return res.status(404).json({ error: "Tenant not found" });
     }
@@ -3000,13 +2991,43 @@ app.post("/api/assistant/chat", async (req, res) => {
       return res.status(400).json({ error: "Missing required parameters" });
     }
 
-    const tenant = TENANTS.find(t => t.id === tenantId);
+    const tenant = await getTenantById(tenantId);
     if (!tenant) {
       return res.status(404).json({ error: "Tenant not found" });
     }
 
     const metrics = await calculateFilteredMetrics(tenantId, campaign, product, startDate, endDate);
     const isArabic = language === "ar";
+
+    let schemaStr = "No external database schema available.";
+    if (tenant.dataSource?.provider === 'PostgreSQL') {
+        const ds = tenant.dataSource;
+        if (!ds.host || !ds.host.includes('.internal')) {
+          const connectionString = buildConnectionString(ds);
+          try {
+              const schemaObj = await introspectSchema(connectionString);
+              schemaStr = JSON.stringify(schemaObj, null, 2);
+          } catch(e){}
+        }
+    } else if (tenant.localSchema) {
+        let cleanSchema = { ...tenant.localSchema };
+        if (
+          cleanSchema['sales_records'] && cleanSchema['sales_records'].length >= 7 && 
+          cleanSchema['crm_deals'] && cleanSchema['crm_deals'].length >= 5 &&
+          (cleanSchema['sales_records']?.[0]?.column === 'record_id' || cleanSchema['sales_records']?.[0]?.column === 'id')
+        ) {
+          // It's the old fake schema
+          if (Object.keys(cleanSchema).length === 2) {
+             schemaStr = "No valid local database schema available.";
+          } else {
+             delete cleanSchema['sales_records'];
+             delete cleanSchema['crm_deals'];
+             schemaStr = JSON.stringify(cleanSchema, null, 2);
+          }
+        } else {
+          schemaStr = JSON.stringify(cleanSchema, null, 2);
+        }
+    }
 
     // Build standard chatbot instruction context injecting tenant KPIs
     const systemInstruction = `
@@ -3029,10 +3050,13 @@ app.post("/api/assistant/chat", async (req, res) => {
       - Active products of tenant: ${tenant.products.map(p => `${p.name} ($${p.price}, Cost: $${p.costOfGoods})`).join(', ')}
       - Campaigns list: ${tenant.campaigns.join(', ')}
       
+      Database Schema:
+      ${schemaStr}
+      
       CRITICAL RULES FOR RESPONSES:
       1. HIGHLY CONCISE AND DIRECT ANSWERS (إجابات مختصرة ومباشرة على قد السؤال فقط): Your answers must be extremely brief, concise, and focused strictly on answering the specific question asked. Do not include any long preambles, introductory filler, greetings, conversational fluff, or redundant explanations. Speak directly and get straight to the point in 1-2 short sentences or a direct Markdown table/list.
       2. EXCLUSIVE FOCUS ON CLIENT DATA (ملك ببيانات العميل فقط): You only speak about this client's actual statistics, products, campaigns, and financial metrics. Never fabricate external information, and never stray outside the scope of the client's business data.
-      3. Always refer to actual calculations based on the numbers above.
+      3. Always refer to actual calculations based on the numbers above. If the user asks for deep data not in the summary, USE THE run_database_query tool.
       4. Language rule: Since the user's session language is currently "${language}", you MUST respect this rule completely. If the language is "ar" (Arabic), you MUST write your entire response strictly in highly professional, eloquent, and extremely concise Standard Arabic (عربي فصيح ومختصر جداً على قد السؤال فقط). Do not output English sentences or mixed sentences. If the language is "en" (English), you MUST write strictly and entirely in professional English.
       5. Construct a clean Markdown table in your response ONLY if requested or if highly relevant to summarizing statistics.
     `;
@@ -3053,17 +3077,92 @@ app.post("/api/assistant/chat", async (req, res) => {
     let responseText = "";
     let parsedTable = undefined;
     try {
+      const toolRunDatabaseQuery = {
+        name: "run_database_query",
+        description: "Execute a SQL SELECT query against the real PostgreSQL database to fetch specific rows or aggregates. ONLY use for deep data questions not covered by the current filter KPIs.",
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            query: { type: Type.STRING, description: "The SQL SELECT query" }
+          },
+          required: ["query"]
+        }
+      };
+
       const geminiRes = await ai.models.generateContent({
         model: "gemini-3.5-flash",
         contents,
         config: {
           systemInstruction,
-          temperature: 0.7
+          temperature: 0.7,
+          tools: [{ functionDeclarations: [toolRunDatabaseQuery] }]
         }
       });
-      responseText = geminiRes.text || (isArabic 
-        ? "أعتذر، السياق التنبئي الخاص بي يمر بمرحلة إعادة ضبط روتينية. يرجى طرح سؤالك المالي مرة أخرى." 
-        : "I apologize, my predictive context is undergoing routine realignment. Please ask your financial question again.");
+      
+      if (geminiRes.functionCalls && geminiRes.functionCalls.length > 0) {
+        const call = geminiRes.functionCalls[0];
+        if (call.name === "run_database_query") {
+           const sqlQuery = call.args.query as string;
+           let dbResults = "";
+           
+           const qClean = (sqlQuery || "").trim().toLowerCase();
+           const isValidSelect = qClean.startsWith('select') || qClean.startsWith('with');
+           const forbidden = ["insert", "update", "delete", "drop", "alter", "truncate", "create", "grant", "revoke"];
+           const isForbidden = forbidden.some(word => qClean.includes(word + " ") || qClean.includes(word + "\n") || qClean.includes(word + "(") || qClean.endsWith(word));
+           
+           if (!isValidSelect || isForbidden) {
+             dbResults = JSON.stringify({ error: "Security Restriction: Only SELECT queries are permitted via the AI assistant." });
+           } else {
+             // Run the query
+             const ds = tenant.dataSource;
+             if (ds && ds.provider === 'PostgreSQL') {
+               const connectionString = buildConnectionString(ds);
+               const client = new Client({ connectionString, ssl: { rejectUnauthorized: false } });
+               try {
+                 await client.connect();
+                 await client.query("SET client_encoding TO 'UTF8'");
+                 const dbRes = await client.query(sqlQuery);
+                 dbResults = JSON.stringify(dbRes.rows.slice(0, 50));
+               } catch(e: any) {
+                 dbResults = JSON.stringify({ error: e.message });
+               } finally {
+                 await client.end();
+               }
+             } else {
+               dbResults = JSON.stringify({ error: "No external SQL database connected. Tell the user to use the visual query builder for local datasets." });
+             }
+           }
+           
+           if (geminiRes.candidates && geminiRes.candidates[0].content) {
+             contents.push(geminiRes.candidates[0].content);
+           }
+           contents.push({
+             role: "user",
+             parts: [{
+               functionResponse: {
+                 name: "run_database_query",
+                 response: { result: dbResults }
+               }
+             }]
+           });
+           
+           const secondRes = await ai.models.generateContent({
+             model: "gemini-3.5-flash",
+             contents,
+             config: { systemInstruction, temperature: 0.7 }
+           });
+           
+           responseText = secondRes.text || "";
+        }
+      } else {
+        responseText = geminiRes.text || "";
+      }
+      
+      if (!responseText) {
+        responseText = (isArabic 
+          ? "أعتذر، السياق التنبئي الخاص بي يمر بمرحلة إعادة ضبط روتينية. يرجى طرح سؤالك المالي مرة أخرى." 
+          : "I apologize, my predictive context is undergoing routine realignment. Please ask your financial question again.");
+      }
     } catch (geminiError: any) {
       console.log("Local chat assistant backup active.");
 
@@ -3440,7 +3539,7 @@ app.post("/api/billing/:tenantId/checkout", (req, res) => {
 app.get("/api/crm/deals/:tenantId", async (req, res) => {
   const { tenantId } = req.params;
   try {
-    const tenant = TENANTS.find(t => t.id === tenantId);
+    const tenant = await getTenantById(tenantId);
     const isDbTenant = tenant?.dataSource?.provider && tenant.dataSource.provider !== 'Local';
     
     if (isDbTenant) {
@@ -3457,6 +3556,117 @@ app.get("/api/crm/deals/:tenantId", async (req, res) => {
   } catch (e: any) {
     console.error(`Failed to load CRM deals for tenant ${tenantId}:`, e.message);
     res.json(CRM_DB[tenantId] || []);
+  }
+});
+
+// --- INVENTORY API ENDPOINTS ---
+
+// Get all inventory items for a tenant (with auto-seeding if empty)
+app.get("/api/inventory/:tenantId/items", async (req, res) => {
+  const { tenantId } = req.params;
+  try {
+    const snapshot = await getDocs(collection(db, 'inventory', tenantId, 'items'));
+    const items: any[] = [];
+    snapshot.forEach(docDoc => {
+      items.push(docDoc.data());
+    });
+
+    if (items.length > 0) {
+      return res.json(items);
+    }
+
+    // Auto-seed from tenant products if empty
+    const tenant = await getTenantById(tenantId);
+    if (!tenant) {
+      return res.json([]);
+    }
+
+    const initialItems = (tenant.products || []).map((prod, i) => {
+      const shortName = prod.name.split(' ').slice(0, 2).map(w => w[0]).join('').toUpperCase();
+      const sku = `${shortName}-${100 + i}`;
+      let stockLevel = 120;
+      let safetyStock = 30;
+      if (i === 1) { stockLevel = 25; safetyStock = 30; }
+      if (i === 2) { stockLevel = 0; safetyStock = 10; }
+
+      return {
+        id: `item-${Date.now()}-${i}`,
+        sku,
+        productName: prod.name,
+        stockLevel,
+        safetyStock,
+        unitCost: prod.costOfGoods,
+        unitPrice: prod.price,
+        supplier: tenantId === 'apex-logistics' ? 'Apex Industrial Corp' : tenantId === 'nova-retail' ? 'Nova Textile Mills' : 'Vortex Cloud Solutions',
+        lastRestocked: new Date().toLocaleDateString('en-US')
+      };
+    });
+
+    for (const item of initialItems) {
+      await setDoc(doc(db, 'inventory', tenantId, 'items', item.id), cleanObject(item));
+    }
+
+    res.json(initialItems);
+  } catch (e: any) {
+    console.error(`Failed to load inventory for tenant ${tenantId}:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Add new inventory item (creates catalog product automatically)
+app.post("/api/inventory/:tenantId/items", async (req, res) => {
+  const { tenantId } = req.params;
+  const newItem = req.body;
+  if (!newItem.id || !newItem.productName) {
+    return res.status(400).json({ error: "Missing item details" });
+  }
+
+  try {
+    // 1. Save item to inventory collection
+    await setDoc(doc(db, 'inventory', tenantId, 'items', newItem.id), cleanObject(newItem));
+
+    // 2. Add to tenant products catalog in Firestore
+    const tenantRef = doc(db, 'tenants', tenantId);
+    const tenantDoc = await getDoc(tenantRef);
+    if (tenantDoc.exists()) {
+      const tenantData = tenantDoc.data() as Tenant;
+      const updatedProducts = [
+        ...(tenantData.products || []),
+        { name: newItem.productName, price: Number(newItem.unitPrice), costOfGoods: Number(newItem.unitCost) }
+      ];
+      await setDoc(tenantRef, cleanObject({ ...tenantData, products: updatedProducts }), { merge: true });
+      
+      // Update in-memory TENANTS
+      const idx = TENANTS.findIndex(t => t.id === tenantId);
+      if (idx !== -1) {
+        TENANTS[idx].products = updatedProducts;
+      }
+    }
+
+    // Invalidate dashboard metrics cache
+    dashboardMetricsCache.clear();
+
+    res.json({ success: true, item: newItem });
+  } catch (e: any) {
+    console.error(`Failed to save inventory item for tenant ${tenantId}:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Update inventory item stock level or other attributes
+app.put("/api/inventory/:tenantId/items/:itemId", async (req, res) => {
+  const { tenantId, itemId } = req.params;
+  const updatedItem = req.body;
+  try {
+    await setDoc(doc(db, 'inventory', tenantId, 'items', itemId), cleanObject(updatedItem));
+
+    // Invalidate dashboard metrics cache
+    dashboardMetricsCache.clear();
+
+    res.json({ success: true, item: updatedItem });
+  } catch (e: any) {
+    console.error(`Failed to update inventory item ${itemId}:`, e.message);
+    res.status(500).json({ error: e.message });
   }
 });
 

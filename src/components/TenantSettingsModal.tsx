@@ -665,12 +665,12 @@ export default function TenantSettingsModal({
 
                       {/* Scrollable list of fields */}
                       <div className="max-h-[250px] overflow-y-auto pr-1 space-y-1.5 custom-scrollbar bg-slate-950/20 border border-slate-800/50 rounded-2xl p-2.5">
-                        {availableFields.map((field) => {
+                        {availableFields.map((field, fIdx) => {
                           const isFieldMapped = schemaMappings.some(m => m.sourceField === field);
                           const isFieldSelected = selectedField === field;
                           return (
                             <div
-                              key={field}
+                              key={`${field}-${fIdx}`}
                               draggable
                               onDragStart={(e) => handleDragStart(e, field)}
                               onClick={() => setSelectedField(isFieldSelected ? null : field)}

@@ -280,7 +280,7 @@ function parseSQLContent(text: string): ParsedData {
   
   try {
     // Regex to match INSERT INTO statements
-    const insertRegex = /INSERT\s+INTO\s+([a-zA-Z0-9_"]+)\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)/gi;
+    const insertRegex = /INSERT\s+INTO\s+([^\s\(]+)\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)/gi;
     let match;
     let index = 1;
     
@@ -390,7 +390,7 @@ function getJSONColumns(text: string): Record<string, string[]> {
 function getSQLColumns(text: string): Record<string, string[]> {
   const res: Record<string, string[]> = {};
   try {
-    const insertRegex = /INSERT\s+INTO\s+([a-zA-Z0-9_"]+)\s*\(([^)]+)\)/gi;
+    const insertRegex = /INSERT\s+INTO\s+([^\s\(]+)\s*\(([^)]+)\)/gi;
     let match;
     while ((match = insertRegex.exec(text)) !== null) {
       const tableName = match[1].toLowerCase().replace(/["'`]/g, '');
@@ -416,7 +416,7 @@ function getSchemaFromFile(file: File, text: string): Record<string, any[]> {
     }
   } else if (name.endsWith('.csv')) {
     const cols = getCSVColumns(text);
-    const tblName = file.name.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9_]/g, "_");
+    const tblName = file.name.replace(/\.[^/.]+$/, "").replace(/[^\p{L}\p{N}_]/gu, "_");
     schema[tblName] = cols.map(c => ({ column: c, type: 'varchar' }));
   } else if (name.endsWith('.sql')) {
     const colsMap = getSQLColumns(text);
@@ -438,7 +438,7 @@ function getSchemaFromFile(file: File, text: string): Record<string, any[]> {
       }
     } else if (text.includes(',') && text.split('\n')[0].split(',').length > 2) {
       const cols = getCSVColumns(text);
-      const tblName = file.name.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9_]/g, "_");
+      const tblName = file.name.replace(/\.[^/.]+$/, "").replace(/[^\p{L}\p{N}_]/gu, "_");
       schema[tblName] = cols.map(c => ({ column: c, type: 'varchar' }));
     }
   }
@@ -446,22 +446,33 @@ function getSchemaFromFile(file: File, text: string): Record<string, any[]> {
   return schema;
 }
 
-function arrayBufferToBinaryString(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  const len = bytes.byteLength;
-  const chunkLimit = 8192;
-  for (let i = 0; i < len; i += chunkLimit) {
-    const chunk = bytes.subarray(i, i + chunkLimit);
-    binary += String.fromCharCode.apply(null, chunk as any);
+function arrayBufferToUTF8String(buffer: ArrayBuffer): string {
+  try {
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    return decoder.decode(buffer);
+  } catch (err) {
+    try {
+      console.log("UTF-8 decoding failed, trying windows-1256 for Arabic support.");
+      const decoder = new TextDecoder('windows-1256', { fatal: false });
+      return decoder.decode(buffer);
+    } catch (fallbackErr) {
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      const len = bytes.byteLength;
+      const chunkLimit = 8192;
+      for (let i = 0; i < len; i += chunkLimit) {
+        const chunk = bytes.subarray(i, i + chunkLimit);
+        binary += String.fromCharCode.apply(null, chunk as any);
+      }
+      return binary;
+    }
   }
-  return binary;
 }
 
 function getSQLiteSchemaFromBinaryString(binaryString: string, filename: string): Record<string, any[]> {
   const schema: Record<string, any[]> = {};
   
-  const regex = /create\s+table\s+(?:if\s+not\s+exists\s+)?["'`]?([a-zA-Z0-9_]+)["'`]?\s*\(/gi;
+  const regex = /create\s+table\s+(?:if\s+not\s+exists\s+)?["'`]?([^"'`\s\(]+)["'`]?\s*\(/gi;
   
   let match;
   while ((match = regex.exec(binaryString)) !== null) {
@@ -499,7 +510,7 @@ function getSQLiteSchemaFromBinaryString(binaryString: string, filename: string)
     }
     
     const parsedColumns = columns.map(colStr => {
-      const colNameMatch = colStr.match(/^["'`]?([a-zA-Z0-9_]+)["'`]?/);
+      const colNameMatch = colStr.match(/^["'`]?([^"'`\s]+)["'`]?/);
       if (colNameMatch) {
         const colName = colNameMatch[1];
         let colType = 'varchar';
@@ -520,30 +531,26 @@ function getSQLiteSchemaFromBinaryString(binaryString: string, filename: string)
     }
   }
   
-  if (Object.keys(schema).length === 0) {
-    schema['sales_records'] = [
-      { column: 'id', type: 'integer' },
-      { column: 'tenant_id', type: 'varchar' },
-      { column: 'date', type: 'varchar' },
-      { column: 'product', type: 'varchar' },
-      { column: 'campaign', type: 'varchar' },
-      { column: 'revenue', type: 'double precision' },
-      { column: 'units', type: 'integer' },
-      { column: 'cost', type: 'double precision' },
-      { column: 'is_anomaly', type: 'boolean' },
-      { column: 'anomaly_reason', type: 'varchar' }
-    ];
-    schema['crm_deals'] = [
-      { column: 'id', type: 'varchar' },
-      { column: 'tenant_id', type: 'varchar' },
-      { column: 'customer_name', type: 'varchar' },
-      { column: 'value', type: 'double precision' },
-      { column: 'status', type: 'varchar' },
-      { column: 'last_updated', type: 'varchar' }
-    ];
-  }
-  
   return schema;
+}
+
+function loadSqlJs(): Promise<any> {
+  return new Promise((resolve, reject) => {
+    if ((window as any).initSqlJs) {
+      resolve((window as any).initSqlJs);
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js';
+    script.async = true;
+    script.onload = () => {
+      resolve((window as any).initSqlJs);
+    };
+    script.onerror = () => {
+      reject(new Error('Failed to load sql.js from CDN'));
+    };
+    document.head.appendChild(script);
+  });
 }
 
 /**
@@ -557,67 +564,136 @@ export function parseLocalFile(file: File): Promise<ParsedData> {
     const reader = new FileReader();
     
     reader.onload = (e) => {
+      const buffer = e.target?.result as ArrayBuffer;
+      const text = arrayBufferToUTF8String(buffer);
+      
       if (isSqlite) {
-        const buffer = e.target?.result as ArrayBuffer;
-        const text = arrayBufferToBinaryString(buffer);
         
-        const schema = getSQLiteSchemaFromBinaryString(text, file.name);
-        
-        const salesRecords: SalesRecord[] = [];
-        const crmDeals: CRMDeal[] = [];
-        
-        const tableNames = Object.keys(schema);
-        const hasSalesTable = tableNames.some(t => t.includes('sale') || t.includes('ledger') || t.includes('transaction') || t.includes('invoice') || t.includes('مبيعات'));
-        const hasCrmTable = tableNames.some(t => t.includes('crm') || t.includes('deal') || t.includes('lead') || t.includes('pipeline') || t.includes('opportunity') || t.includes('عملاء'));
-        
-        if (hasSalesTable || tableNames.length > 0) {
-          const products = ['Standard Product A', 'Premium Service B', 'Enterprise License C', 'Starter Flow Subscription', 'Developer Api Pro License'];
-          const campaigns = ['Summer Flash Sale', 'Q3 Kickoff Initiative', 'Direct Outreach Focus', 'General Marketing', 'None'];
-          for (let i = 0; i < 30; i++) {
-            const date = new Date();
-            date.setDate(date.getDate() - i);
-            const product = products[i % products.length];
-            const campaign = campaigns[i % campaigns.length];
-            const revenue = Math.floor(Math.random() * 8000) + 150;
-            const cost = Math.floor(revenue * (0.3 + Math.random() * 0.4));
-            salesRecords.push({
-              date: date.toISOString().substring(0, 10),
-              product,
-              campaign,
-              revenue,
-              units: Math.floor(Math.random() * 3) + 1,
-              cost,
-              isAnomaly: Math.random() > 0.9,
-              anomalyReason: Math.random() > 0.9 ? 'Severe weather or logistics anomaly detected' : ''
+        loadSqlJs().then(async (initSqlJs) => {
+          try {
+            const SQL = await initSqlJs({
+              locateFile: (file: string) => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}`
+            });
+            const db = new SQL.Database(new Uint8Array(buffer));
+            
+            // Introspect tables and schemas
+            const schema: Record<string, { column: string; type: string }[]> = {};
+            
+            const tablesRes = db.exec("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
+            const tableNames: string[] = [];
+            if (tablesRes.length > 0 && tablesRes[0].values) {
+              tablesRes[0].values.forEach((row: any) => {
+                tableNames.push(row[0]);
+              });
+            }
+            
+            for (const tName of tableNames) {
+              const colsRes = db.exec(`PRAGMA table_info("${tName}")`);
+              if (colsRes.length > 0 && colsRes[0].values) {
+                schema[tName] = colsRes[0].values.map((cRow: any) => ({
+                  column: cRow[1], // name
+                  type: cRow[2]    // type
+                }));
+              }
+            }
+            
+            const salesRecords: SalesRecord[] = [];
+            const crmDeals: CRMDeal[] = [];
+            
+            // Find the sales table and CRM table based on column matching or table names
+            const salesTable = tableNames.find(t => t.toLowerCase().includes('sale') || t.toLowerCase().includes('ledger') || t.toLowerCase().includes('transaction') || t.toLowerCase().includes('invoice') || t.toLowerCase().includes('مبيعات') || t.toLowerCase().includes('عمليات') || t.toLowerCase().includes('فواتير'));
+            const crmTable = tableNames.find(t => t.toLowerCase().includes('crm') || t.toLowerCase().includes('deal') || t.toLowerCase().includes('lead') || t.toLowerCase().includes('pipeline') || t.toLowerCase().includes('opportunity') || t.toLowerCase().includes('عملاء') || t.toLowerCase().includes('صفقات') || t.toLowerCase().includes('فرص'));
+            
+            if (salesTable) {
+              const dateCol = schema[salesTable].find(c => ['date', 'time', 'create', 'تاريخ', 'وقت'].some(kw => c.column.toLowerCase().includes(kw)))?.column;
+              const productCol = schema[salesTable].find(c => ['product', 'item', 'sku', 'منتج', 'سلعة'].some(kw => c.column.toLowerCase().includes(kw)))?.column;
+              const campaignCol = schema[salesTable].find(c => ['campaign', 'source', 'medium', 'حملة', 'مصدر'].some(kw => c.column.toLowerCase().includes(kw)))?.column;
+              const revenueCol = schema[salesTable].find(c => ['revenue', 'amount', 'price', 'total', 'إيراد', 'مبلغ', 'سعر', 'قيمة'].some(kw => c.column.toLowerCase().includes(kw)))?.column;
+              const unitsCol = schema[salesTable].find(c => ['unit', 'qty', 'quantity', 'count', 'كمية', 'عدد'].some(kw => c.column.toLowerCase().includes(kw)))?.column;
+              const costCol = schema[salesTable].find(c => ['cost', 'cogs', 'expense', 'تكلفة', 'مصاريف'].some(kw => c.column.toLowerCase().includes(kw)))?.column;
+              
+              const rowsRes = db.exec(`SELECT * FROM "${salesTable}" LIMIT 2000`);
+              if (rowsRes.length > 0 && rowsRes[0].columns && rowsRes[0].values) {
+                const colNames = rowsRes[0].columns;
+                rowsRes[0].values.forEach((rowVals: any) => {
+                  const rowObj: any = {};
+                  colNames.forEach((cName, idx) => {
+                    rowObj[cName] = rowVals[idx];
+                  });
+                  
+                  salesRecords.push({
+                    date: dateCol && rowObj[dateCol] ? String(rowObj[dateCol]).substring(0, 10) : new Date().toISOString().substring(0, 10),
+                    product: productCol && rowObj[productCol] ? String(rowObj[productCol]) : 'Standard Product',
+                    campaign: campaignCol && rowObj[campaignCol] ? String(rowObj[campaignCol]) : 'Organic',
+                    revenue: revenueCol && !isNaN(parseFloat(rowObj[revenueCol])) ? parseFloat(rowObj[revenueCol]) : 0,
+                    units: unitsCol && !isNaN(parseInt(rowObj[unitsCol], 10)) ? parseInt(rowObj[unitsCol], 10) : 1,
+                    cost: costCol && !isNaN(parseFloat(rowObj[costCol])) ? parseFloat(rowObj[costCol]) : 0,
+                    isAnomaly: false,
+                    anomalyReason: ''
+                  });
+                });
+              }
+            }
+            
+            if (crmTable) {
+              const idCol = schema[crmTable].find(c => ['id', 'key', 'code', 'معرف', 'رقم'].some(kw => c.column.toLowerCase().includes(kw)))?.column;
+              const nameCol = schema[crmTable].find(c => ['name', 'customer', 'client', 'contact', 'عميل', 'اسم'].some(kw => c.column.toLowerCase().includes(kw)))?.column;
+              const valueCol = schema[crmTable].find(c => ['value', 'amount', 'worth', 'revenue', 'قيمة', 'مبلغ'].some(kw => c.column.toLowerCase().includes(kw)))?.column;
+              const statusCol = schema[crmTable].find(c => ['status', 'stage', 'state', 'phase', 'حالة', 'مرحلة'].some(kw => c.column.toLowerCase().includes(kw)))?.column;
+              const updatedCol = schema[crmTable].find(c => ['update', 'date', 'time', 'تحديث', 'تاريخ'].some(kw => c.column.toLowerCase().includes(kw)))?.column;
+              
+              const rowsRes = db.exec(`SELECT * FROM "${crmTable}" LIMIT 2000`);
+              if (rowsRes.length > 0 && rowsRes[0].columns && rowsRes[0].values) {
+                const colNames = rowsRes[0].columns;
+                rowsRes[0].values.forEach((rowVals: any, idx) => {
+                  const rowObj: any = {};
+                  colNames.forEach((cName, cIdx) => {
+                    rowObj[cName] = rowVals[cIdx];
+                  });
+                  
+                  const rawStatus = statusCol && rowObj[statusCol] ? String(rowObj[statusCol]) : 'Lead';
+                  let status: CRMDeal['status'] = 'Lead';
+                  if (/won|فوز|ناجحة|ganado/i.test(rawStatus)) status = 'Won';
+                  else if (/lost|خسارة|ملغاة|perdido/i.test(rawStatus)) status = 'Lost';
+                  else if (/proposal|عرض|تقديم|propuesta/i.test(rawStatus)) status = 'Proposal';
+                  else if (/qualified|مؤهل|qual/i.test(rawStatus)) status = 'Qualified';
+                  
+                  crmDeals.push({
+                    id: idCol && rowObj[idCol] ? String(rowObj[idCol]) : `deal-sqlite-${idx + 1}`,
+                    customerName: nameCol && rowObj[nameCol] ? String(rowObj[nameCol]) : 'Unknown Client',
+                    value: valueCol && !isNaN(parseFloat(rowObj[valueCol])) ? parseFloat(rowObj[valueCol]) : 0,
+                    status,
+                    lastUpdated: updatedCol && rowObj[updatedCol] ? String(rowObj[updatedCol]).substring(0, 10) : new Date().toISOString().substring(0, 10)
+                  });
+                });
+              }
+            }
+            
+            db.close();
+            resolve({
+              salesRecords,
+              crmDeals,
+              originalSchema: schema
+            });
+          } catch (sqliteErr) {
+            console.error("SQLite binary parsing failed, falling back to basic header discovery", sqliteErr);
+            const schema = getSQLiteSchemaFromBinaryString(text, file.name);
+            resolve({
+              salesRecords: [],
+              crmDeals: [],
+              originalSchema: schema
             });
           }
-        }
-        
-        if (hasCrmTable || tableNames.length > 0) {
-          const customers = ['Transcorp Group', 'DevFlow Labs', 'Zenith Logistics', 'GlowFit Wearables', 'FinTech Solutions', 'Acme Corp', 'NextGen Technologies'];
-          const statuses: CRMDeal['status'][] = ['Lead', 'Qualified', 'Proposal', 'Won', 'Lost'];
-          for (let i = 0; i < 15; i++) {
-            const status = statuses[i % statuses.length];
-            const value = Math.floor(Math.random() * 15000) + 500;
-            const lastUpdated = new Date();
-            lastUpdated.setDate(lastUpdated.getDate() - (i * 2));
-            crmDeals.push({
-              id: `deal-sqlite-${i + 1}`,
-              customerName: customers[i % customers.length],
-              value,
-              status,
-              lastUpdated: lastUpdated.toISOString().substring(0, 10)
-            });
-          }
-        }
-        
-        resolve({
-          salesRecords,
-          crmDeals,
-          originalSchema: schema
+        }).catch((err) => {
+          console.error("Failed to load sql.js", err);
+          const schema = getSQLiteSchemaFromBinaryString(text, file.name);
+          resolve({
+            salesRecords: [],
+            crmDeals: [],
+            originalSchema: schema
+          });
         });
       } else {
-        const text = e.target?.result as string || '';
         let parsed: ParsedData;
         
         if (name.endsWith('.json')) {
@@ -650,10 +726,6 @@ export function parseLocalFile(file: File): Promise<ParsedData> {
       resolve({ salesRecords: [], crmDeals: [] });
     };
     
-    if (isSqlite) {
-      reader.readAsArrayBuffer(file);
-    } else {
-      reader.readAsText(file);
-    }
+    reader.readAsArrayBuffer(file);
   });
 }

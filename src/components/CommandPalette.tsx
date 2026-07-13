@@ -13,8 +13,8 @@ interface CommandPaletteProps {
   onSelectTenant: (id: string) => void;
   selectedProduct: string;
   onSelectProduct: (product: string) => void;
-  activeView: 'dashboard' | 'users' | 'billing' | 'profile';
-  setActiveView: (view: 'dashboard' | 'users' | 'billing' | 'profile') => void;
+  activeView: 'dashboard' | 'users' | 'billing' | 'profile' | 'inventory';
+  setActiveView: (view: 'dashboard' | 'users' | 'billing' | 'profile' | 'inventory') => void;
   isSuperAdmin: boolean;
   language: Language;
 }
