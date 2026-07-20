@@ -83,6 +83,10 @@ export interface ChatMessage {
     rows: string[][];
     title?: string;
   };
+  action?: {
+    type: string;
+    payload?: any;
+  };
 }
 
 export interface CRMDeal {
@@ -112,6 +116,20 @@ export interface BillingData {
     item: string;
     amount: number;
     date: string;
+  }[];
+  creditCard?: {
+    brand: string;
+    last4: string;
+    expMonth: string;
+    expYear: string;
+    cardholder: string;
+  };
+  invoices?: {
+    id: string;
+    date: string;
+    description: string;
+    amount: number;
+    status: 'Paid' | 'Unpaid' | 'Pending';
   }[];
 }
 

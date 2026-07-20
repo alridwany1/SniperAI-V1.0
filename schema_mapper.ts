@@ -1,9 +1,40 @@
 import { Client } from 'pg';
 import { GoogleGenAI } from '@google/genai';
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-});
+let cachedAi: GoogleGenAI | null = null;
+let cachedApiKey: string | undefined = undefined;
+
+function getAi(): GoogleGenAI {
+  const currentKey = process.env.GEMINI_API_KEY;
+  if (!cachedAi || cachedApiKey !== currentKey) {
+    cachedAi = new GoogleGenAI({
+      apiKey: currentKey || "",
+    });
+    cachedApiKey = currentKey;
+  }
+  return cachedAi;
+}
+
+export function decodeUTF8String(val: any): string {
+  if (val === null || val === undefined) return '';
+  if (typeof val === 'string') {
+    try {
+      const buf = Buffer.from(val, 'binary');
+      const decoded = buf.toString('utf8');
+      // If the decoded string is different from the original and contains non-ASCII/multi-byte characters
+      if (decoded !== val && /[^\x00-\x7F]/.test(decoded)) {
+        return decoded;
+      }
+    } catch (e) {
+      // ignore
+    }
+    return val;
+  }
+  if (Buffer.isBuffer(val)) {
+    return val.toString('utf8');
+  }
+  return String(val);
+}
 
 export async function introspectSchema(connectionString: string) {
   const client = new Client({ connectionString, ssl: { rejectUnauthorized: false } });
@@ -17,8 +48,11 @@ export async function introspectSchema(connectionString: string) {
     `);
     const schema: Record<string, any[]> = {};
     for (const row of res.rows) {
-      if (!schema[row.table_name]) schema[row.table_name] = [];
-      schema[row.table_name].push({ column: row.column_name, type: row.data_type });
+      const tableName = decodeUTF8String(row.table_name);
+      const columnName = decodeUTF8String(row.column_name);
+      const dataType = decodeUTF8String(row.data_type);
+      if (!schema[tableName]) schema[tableName] = [];
+      schema[tableName].push({ column: columnName, type: dataType });
     }
     return schema;
   } finally {
@@ -102,7 +136,7 @@ export async function mapSchemaWithAI(schema: any) {
     }
     `;
     
-    const response = await ai.models.generateContent({
+    const response = await getAi().models.generateContent({
       model: 'gemini-3.5-flash',
       contents: prompt,
       config: { temperature: 0.1 }
@@ -282,7 +316,7 @@ export async function analyzeAndRouteSchemaWithAI(schema: any, displayLanguage: 
     }
     `;
 
-    const response = await ai.models.generateContent({
+    const response = await getAi().models.generateContent({
       model: 'gemini-3.5-flash',
       contents: prompt,
       config: { 

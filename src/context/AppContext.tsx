@@ -12,12 +12,18 @@ interface AppContextType {
   selectedTenantId: string;
   setSelectedTenantId: (id: string) => void;
   tenants: Tenant[];
-  setTenants: (tenants: Tenant[]) => void;
+  setTenants: React.Dispatch<React.SetStateAction<Tenant[]>>;
   language: Language;
   setLanguage: (lang: Language) => void;
+  speechLocale: string;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
+
+const speechLocaleMap: Record<Language, string> = {
+  en: 'en-US',
+  ar: 'ar-SA',
+};
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
@@ -32,6 +38,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [language, setLanguage] = useState<Language>(() => {
     return (localStorage.getItem('language') as Language) || 'en';
   });
+
+  const speechLocale = speechLocaleMap[language] || 'en-US';
 
   useEffect(() => {
     localStorage.setItem('language', language);
@@ -57,6 +65,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setTenants,
         language,
         setLanguage,
+        speechLocale,
       }}
     >
       {children}

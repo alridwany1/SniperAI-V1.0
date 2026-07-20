@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { 
   translations, 
@@ -10,6 +10,8 @@ import {
 import { Tenant, SalesRecord, CRMDeal } from '../types';
 import SchemaExplorer from './SchemaExplorer';
 import { parseLocalFile } from '../utils/fileParser';
+import { db } from '../utils/firebase';
+import { doc, getDoc } from 'firebase/firestore';
 
 interface AddTenantScreenProps {
   language: Language;
@@ -74,6 +76,50 @@ export default function AddTenantScreen({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
 
+  // Subscription limit state
+  const [userProfile, setUserProfile] = useState<any>(null);
+  const [existingTenantsCount, setExistingTenantsCount] = useState<number>(0);
+
+  useEffect(() => {
+    const loadData = async () => {
+      const emailKey = userEmail?.toLowerCase().trim();
+      if (emailKey) {
+        try {
+          if (db) {
+            const profileSnap = await getDoc(doc(db, 'user_profiles', emailKey));
+            if (profileSnap.exists()) {
+              setUserProfile(profileSnap.data());
+            }
+          }
+        } catch (e) {
+          console.error("Failed to load profile in AddTenantScreen:", e);
+        }
+
+        // Fallback to local storage cache
+        const cachedStr = localStorage.getItem(`_user_profile_cache_${emailKey}`);
+        if (cachedStr) {
+          try {
+            setUserProfile(JSON.parse(cachedStr));
+          } catch (e) {}
+        }
+      }
+
+      try {
+        const response = await fetch('/api/tenants');
+        if (response.ok) {
+          const data = await response.json();
+          if (Array.isArray(data)) {
+            setExistingTenantsCount(data.length);
+          }
+        }
+      } catch (e) {
+        console.error("Failed to fetch tenants in AddTenantScreen:", e);
+      }
+    };
+
+    loadData();
+  }, [userEmail]);
+
   const resetConnection = () => {
     setConnectionStatus('idle');
     setConnectionMessage('');
@@ -84,7 +130,7 @@ export default function AddTenantScreen({
 
   const handleProviderChange = (val: string) => {
     setProvider(val);
-    if (val !== 'Local') {
+    if (val !== 'Local' && val !== 'SQLite') {
       setLocalFile(null);
       setDatabaseName('');
     } else {
@@ -144,7 +190,7 @@ export default function AddTenantScreen({
     setConnectionMessage('');
     setError('');
 
-    if (provider !== 'Local') {
+    if (provider !== 'Local' && provider !== 'SQLite') {
       if (!host.trim()) {
         setConnectionStatus('failed');
         setConnectionMessage(language === 'ar' ? 'الرجاء إدخال مضيف الاتصال أو عنوان API أولاً' : 'Please input connection host or API URL first');
@@ -174,10 +220,10 @@ export default function AddTenantScreen({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           provider,
-          host: provider === 'Local' ? 'local-bridge://secure' : host.trim(),
-          apiKey: provider === 'Local' ? 'local-token-simulated' : apiKey.trim(),
+          host: (provider === 'Local' || provider === 'SQLite') ? 'local-bridge://secure' : host.trim(),
+          apiKey: (provider === 'Local' || provider === 'SQLite') ? 'local-token-simulated' : apiKey.trim(),
           databaseName: databaseName.trim(),
-          username: provider === 'Local' ? 'local_client' : username.trim(),
+          username: (provider === 'Local' || provider === 'SQLite') ? 'local_client' : username.trim(),
           displayLanguage: language,
           localSchema: localFileSchema,
         }),
@@ -208,6 +254,25 @@ export default function AddTenantScreen({
 
     if (!name.trim()) {
       setError(language === 'ar' ? 'اسم المستأجر مطلوب' : 'Tenant Name is required');
+      setIsSubmitting(false);
+      return;
+    }
+
+    // Check user subscription limits for tenant workspaces / data sources
+    const userPlan = (userProfile?.plan || 'monthly').toLowerCase();
+    let tenantLimit = 1;
+    if (userPlan === 'annual' || userPlan === 'growth') {
+      tenantLimit = 5;
+    } else if (userPlan === 'enterprise') {
+      tenantLimit = Infinity;
+    }
+
+    if (existingTenantsCount >= tenantLimit) {
+      setError(
+        language === 'ar'
+          ? `عذراً، لقد تجاوزت الحد الأقصى لعدد مصادر البيانات ومساحات العمل المسموح بها لباقتك الحالية (${tenantLimit === Infinity ? 'غير محدود' : tenantLimit} مصادر). يرجى ترقية باقة الاشتراك لزيادة حدودك.`
+          : `Sorry, you have exceeded the maximum connected data sources allowed for your current subscription tier (${tenantLimit === Infinity ? 'Unlimited' : tenantLimit} pipelines). Please upgrade your plan to increase limits.`
+      );
       setIsSubmitting(false);
       return;
     }
@@ -452,10 +517,11 @@ export default function AddTenantScreen({
                       onChange={(e) => handleProviderChange(e.target.value)}
                       className="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500/80 rounded-xl px-4 py-2.5 text-sm text-slate-200 focus:outline-none appearance-none cursor-pointer"
                     >
-                      <option value="Odoo">Odoo CRM</option>
+                      <option value="Odoo">{language === 'ar' ? 'نظام مبيعات Odoo' : 'Odoo CRM'}</option>
                       <option value="PostgreSQL">PostgreSQL</option>
                       <option value="MongoDB">MongoDB</option>
-                      <option value="Shopify">Shopify E-Commerce</option>
+                      <option value="Shopify">{language === 'ar' ? 'متجر شوبيفاي الإلكتروني' : 'Shopify E-Commerce'}</option>
+                      <option value="SQLite">{language === 'ar' ? 'قاعدة بيانات SQLite محلية' : 'SQLite (Local DB)'}</option>
                       <option value="Local">{t.localDatabaseOption}</option>
                     </select>
                     <div className={`absolute inset-y-0 ${language === 'ar' ? 'left-3' : 'right-3'} flex items-center pointer-events-none text-slate-500 text-[10px]`}>
@@ -465,7 +531,7 @@ export default function AddTenantScreen({
                 </div>
               </div>
 
-              {provider === 'Local' ? (
+              {(provider === 'Local' || provider === 'SQLite') ? (
                 /* Drag-and-Drop Local DB File Selector */
                 <div className="space-y-4">
                   <div

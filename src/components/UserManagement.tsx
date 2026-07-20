@@ -8,10 +8,11 @@ import {
   Folder, Download, CheckSquare, Square
 } from 'lucide-react';
 import AuditLogs from './AuditLogs';
+import AccessLogs from './AccessLogs';
 import { addAuditLog } from '../utils/auditLogger';
 import { Tenant } from '../types';
 import { db, handleFirestoreError, OperationType } from '../utils/firebase';
-import { doc, deleteDoc } from 'firebase/firestore';
+import { doc, deleteDoc, getDocs, collection, setDoc } from 'firebase/firestore';
 import ConfirmModal from './ConfirmModal';
 
 interface UserManagementProps {
@@ -33,7 +34,7 @@ export default function UserManagement({ language, currentUserEmail, tenants = [
   const t = translations[language];
   const isRTL = language === 'ar';
 
-  const [subTab, setSubTab] = useState<'directory' | 'audit' | 'workspaces'>('directory');
+  const [subTab, setSubTab] = useState<'directory' | 'audit' | 'workspaces' | 'access_logs'>('directory');
   const [workspaceSearch, setWorkspaceSearch] = useState('');
   const [selectedWorkspaceIds, setSelectedWorkspaceIds] = useState<string[]>([]);
   const [users, setUsers] = useState<LocalUser[]>([]);
@@ -81,14 +82,118 @@ export default function UserManagement({ language, currentUserEmail, tenants = [
     loadUsers();
   }, []);
 
-  const loadUsers = () => {
-    const rawUsers = localStorage.getItem('sniper_users') || '[]';
+  const loadUsers = async () => {
+    let cloudUsers: LocalUser[] = [];
+    let hasCloudError = false;
+
     try {
-      const parsed = JSON.parse(rawUsers);
-      setUsers(parsed);
+      if (db) {
+        const snapshot = await getDocs(collection(db, 'user_profiles'));
+        cloudUsers = snapshot.docs.map(docDoc => {
+          const data = docDoc.data();
+          const email = docDoc.id;
+          let plan = 'annual';
+          if (data.bio && data.bio.toLowerCase().includes('plan:')) {
+            const parts = data.bio.toLowerCase().split('plan:');
+            if (parts.length > 1) {
+              plan = parts[1].trim();
+            }
+          } else if (data.plan) {
+            plan = data.plan;
+          }
+          return {
+            name: data.fullName || data.name || 'Anonymous User',
+            email: email,
+            password: '••••••••',
+            plan: plan,
+            createdAt: data.updatedAt || data.createdAt || new Date().toISOString()
+          };
+        });
+      }
+    } catch (e) {
+      console.error('Error fetching user_profiles from Firestore:', e);
+      hasCloudError = true;
+    }
+
+    const rawUsers = localStorage.getItem('sniper_users') || '[]';
+    let localUsers: LocalUser[] = [];
+    try {
+      localUsers = JSON.parse(rawUsers);
     } catch (e) {
       console.error('Error parsing sniper_users', e);
-      setUsers([]);
+    }
+
+    const userMap = new Map<string, LocalUser>();
+
+    // Standard default admin and team profiles to seed/ensure
+    const defaultUsers: LocalUser[] = [
+      {
+        name: 'SniperAI Administrator',
+        email: 'admin@sniper.ai',
+        password: 'password123',
+        plan: 'enterprise',
+        createdAt: new Date('2026-01-01').toISOString()
+      },
+      {
+        name: 'Executive User',
+        email: 'executive@sniper.ai',
+        password: 'password123',
+        plan: 'enterprise',
+        createdAt: new Date('2026-01-15').toISOString()
+      },
+      {
+        name: 'Sara Al-Kamil',
+        email: 'sara.k@apex.com',
+        password: 'password123',
+        plan: 'enterprise',
+        createdAt: new Date('2026-02-15').toISOString()
+      },
+      {
+        name: 'Omar Al-Dossary',
+        email: 'omar.d@nova.com',
+        password: 'password123',
+        plan: 'annual',
+        createdAt: new Date('2026-03-10').toISOString()
+      },
+      {
+        name: 'Khalid Al-Ahmad',
+        email: 'khalid.a@vortex.com',
+        password: 'password123',
+        plan: 'monthly',
+        createdAt: new Date('2026-04-22').toISOString()
+      }
+    ];
+
+    // 1. Add defaults
+    defaultUsers.forEach(u => userMap.set(u.email.toLowerCase(), u));
+    // 2. Overlay local users
+    localUsers.forEach(u => userMap.set(u.email.toLowerCase(), u));
+    // 3. Overlay cloud users
+    cloudUsers.forEach(u => userMap.set(u.email.toLowerCase(), u));
+
+    const finalUsers = Array.from(userMap.values());
+    setUsers(finalUsers);
+
+    // Save default mock users in Firestore Cloud if it was empty
+    if (!hasCloudError && db && cloudUsers.length === 0) {
+      try {
+        for (const u of defaultUsers) {
+          const profilePayload = {
+            fullName: u.name,
+            phone: u.email === 'admin@sniper.ai' ? '+966 50 000 0000' : (u.email === 'executive@sniper.ai' ? '+966 50 111 2222' : ''),
+            role: u.email === 'admin@sniper.ai' ? 'Enterprise Admin' : 'Executive Partner',
+            company: u.email === 'executive@sniper.ai' ? 'Apex Logistics' : (u.email.includes('@') ? u.email.split('@')[1].split('.')[0].toUpperCase() : ''),
+            bio: u.email === 'executive@sniper.ai' ? 'Executive User Account' : `Account registered with plan: ${u.plan.toUpperCase()}`,
+            location: 'Riyadh, Saudi Arabia',
+            avatarId: u.email === 'executive@sniper.ai' ? 'av2' : 'av1',
+            updatedAt: u.createdAt,
+            tenantId: u.email === 'executive@sniper.ai' ? 'apex-logistics' : '',
+          };
+          await setDoc(doc(db, 'user_profiles', u.email.toLowerCase()), profilePayload);
+        }
+      } catch (saveErr) {
+        console.error('Failed to seed default user profiles in Firestore:', saveErr);
+      }
     }
   };
 
@@ -226,7 +331,7 @@ export default function UserManagement({ language, currentUserEmail, tenants = [
   };
 
   // Add user handler
-  const handleAddUserSubmit = (e: React.FormEvent) => {
+  const handleAddUserSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formName.trim() || !formEmail.trim() || !formPassword.trim()) {
       showNotification(language === 'ar' ? 'يرجى ملء جميع الحقول المطلوبة.' : 'Please fill all required fields.', true);
@@ -245,6 +350,37 @@ export default function UserManagement({ language, currentUserEmail, tenants = [
       return;
     }
 
+    // Check user subscription limits for operator seats
+    const currentUser = users.find(u => u.email.toLowerCase() === currentUserEmail.toLowerCase());
+    const currentUserPlan = (currentUser?.plan || 'monthly').toLowerCase();
+    
+    let userLimit = 1;
+    if (currentUserPlan === 'annual' || currentUserPlan === 'growth') {
+      userLimit = 5;
+    } else if (currentUserPlan === 'enterprise') {
+      userLimit = Infinity;
+    }
+
+    const currentSeatsUsed = users.filter(u => (u.plan || 'monthly').toLowerCase() === currentUserPlan).length;
+
+    if (currentSeatsUsed >= userLimit) {
+      showNotification(
+        language === 'ar'
+          ? `عذراً، لقد بلغت الحد الأقصى لمقاعد المستخدمين المسموح بها لباقة اشتراكك الحالية (${userLimit === Infinity ? 'غير محدود' : userLimit} مستخدمين). يرجى ترقية باقة الاشتراك لزيادة هذا الحد.`
+          : `Sorry, you have reached the maximum user seats allowed for your current subscription tier (${userLimit === Infinity ? 'Unlimited' : userLimit} seats). Please upgrade your plan to increase limits.`,
+        true
+      );
+      if (typeof addAuditLog === 'function') {
+        addAuditLog(
+          currentUserEmail,
+          'SECURITY',
+          `Blocked user creation: Reached subscription plan limit of ${userLimit} seat(s). Current: ${currentSeatsUsed}/${userLimit} seats.`,
+          'ERROR'
+        );
+      }
+      return;
+    }
+
     const newUser: LocalUser = {
       name: formName.trim(),
       email: formEmail.toLowerCase().trim(),
@@ -252,6 +388,26 @@ export default function UserManagement({ language, currentUserEmail, tenants = [
       plan: formPlan,
       createdAt: new Date().toISOString()
     };
+
+    // Save to Firestore Cloud Database
+    try {
+      if (db) {
+        const profilePayload = {
+          fullName: formName.trim(),
+          phone: '',
+          role: formPlan === 'enterprise' ? 'Enterprise Admin' : 'Executive Partner',
+          company: formEmail.includes('@') ? formEmail.split('@')[1].split('.')[0].toUpperCase() : '',
+          bio: `Account registered with plan: ${formPlan.toUpperCase()}`,
+          location: '',
+          avatarId: 'av1',
+          updatedAt: newUser.createdAt,
+          tenantId: '',
+        };
+        await setDoc(doc(db, 'user_profiles', formEmail.toLowerCase().trim()), profilePayload);
+      }
+    } catch (saveErr) {
+      console.error('Failed to create user profile in Firestore:', saveErr);
+    }
 
     const updated = [...users, newUser];
     saveUsersToStorage(updated);
@@ -279,13 +435,28 @@ export default function UserManagement({ language, currentUserEmail, tenants = [
   };
 
   // Edit user handler
-  const handleEditUserSubmit = (e: React.FormEvent) => {
+  const handleEditUserSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedUser) return;
 
     if (!formName.trim()) {
       showNotification(language === 'ar' ? 'الاسم مطلوب.' : 'Name is required.', true);
       return;
+    }
+
+    // Save to Firestore Cloud Database
+    try {
+      if (db) {
+        const profilePayload = {
+          fullName: formName.trim(),
+          role: formPlan === 'enterprise' ? 'Enterprise Admin' : 'Executive Partner',
+          bio: `Account registered with plan: ${formPlan.toUpperCase()}`,
+          updatedAt: new Date().toISOString(),
+        };
+        await setDoc(doc(db, 'user_profiles', selectedUser.email.toLowerCase().trim()), profilePayload, { merge: true });
+      }
+    } catch (saveErr) {
+      console.error('Failed to update user profile in Firestore:', saveErr);
     }
 
     const updated = users.map(u => {
@@ -442,10 +613,24 @@ export default function UserManagement({ language, currentUserEmail, tenants = [
           <Folder className="w-3.5 h-3.5" />
           <span>{t.workspacesTab}</span>
         </button>
+        <button
+          id="admin-access-logs-tab"
+          onClick={() => setSubTab('access_logs')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+            subTab === 'access_logs'
+              ? 'bg-gradient-to-r from-indigo-600/10 to-violet-600/10 text-indigo-400 border-indigo-500/20 shadow-md'
+              : 'text-slate-400 hover:text-white border-transparent bg-transparent hover:bg-slate-900/40'
+          }`}
+        >
+          <Shield className="w-3.5 h-3.5 text-indigo-400" />
+          <span>{language === 'ar' ? 'سجلات الوصول الإدارية' : 'Access Logs'}</span>
+        </button>
       </div>
 
       {subTab === 'audit' ? (
         <AuditLogs language={language} currentUserEmail={currentUserEmail} />
+      ) : subTab === 'access_logs' ? (
+        <AccessLogs language={language} currentUserEmail={currentUserEmail} users={users} />
       ) : subTab === 'workspaces' ? (
         <div className="bg-slate-950/60 border border-slate-900 rounded-3xl p-5 shadow-xl space-y-5">
           {/* Header metadata */}

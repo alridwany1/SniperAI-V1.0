@@ -58,10 +58,12 @@ export default function ThemeSwitcher() {
     return cleanup;
   }, [theme]);
 
-  const options: { value: ThemeOption; label: string; icon: React.ComponentType<any> }[] = [
-    { value: 'light', label: 'Light', icon: Sun },
-    { value: 'dark', label: 'Dark', icon: Moon },
-    { value: 'system', label: 'System', icon: Monitor },
+  const isArabic = typeof window !== 'undefined' && localStorage.getItem('language') === 'ar';
+
+  const options: { value: ThemeOption; label: string; labelAr: string; icon: React.ComponentType<any> }[] = [
+    { value: 'light', label: 'Light', labelAr: 'الوضع الفاتح', icon: Sun },
+    { value: 'dark', label: 'Dark', labelAr: 'الوضع الداكن', icon: Moon },
+    { value: 'system', label: 'System', labelAr: 'وضع النظام', icon: Monitor },
   ];
 
   return (
@@ -78,8 +80,8 @@ export default function ThemeSwitcher() {
                 ? 'text-white' 
                 : 'text-slate-400 hover:text-slate-200'
             }`}
-            title={`${opt.label} Mode`}
-            aria-label={`${opt.label} Mode`}
+            title={isArabic ? opt.labelAr : `${opt.label} Mode`}
+            aria-label={isArabic ? opt.labelAr : `${opt.label} Mode`}
           >
             {/* Sliding Background Pill */}
             {isActive && (

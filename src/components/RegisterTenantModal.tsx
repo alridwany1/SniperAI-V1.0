@@ -10,6 +10,16 @@ interface RegisterTenantModalProps {
   onClose: () => void;
   language: Language;
   onOnboardSuccess: (newTenant: Tenant) => void;
+  userEmail: string;
+  tenants: Tenant[];
+  userProfile?: {
+    fullName: string;
+    role: string;
+    company: string;
+    avatarId: string;
+    tenantId: string;
+    plan?: string;
+  } | null;
 }
 
 export default function RegisterTenantModal({
@@ -17,6 +27,9 @@ export default function RegisterTenantModal({
   onClose,
   language,
   onOnboardSuccess,
+  userEmail,
+  tenants,
+  userProfile,
 }: RegisterTenantModalProps) {
   const t = translations[language];
 
@@ -58,7 +71,7 @@ export default function RegisterTenantModal({
 
   const handleProviderChange = (val: string) => {
     setProvider(val);
-    if (val !== 'Local') {
+    if (val !== 'Local' && val !== 'SQLite') {
       setLocalFile(null);
       setDatabaseName('');
     } else {
@@ -136,7 +149,7 @@ export default function RegisterTenantModal({
     setConnectionMessage('');
     setError('');
 
-    if (provider !== 'Local') {
+    if (provider !== 'Local' && provider !== 'SQLite') {
       if (!host.trim()) {
         setConnectionStatus('failed');
         setConnectionMessage(language === 'ar' ? 'الرجاء إدخال مضيف الاتصال أو عنوان API أولاً' : 'Please input connection host or API URL first');
@@ -166,10 +179,10 @@ export default function RegisterTenantModal({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           provider,
-          host: provider === 'Local' ? 'local-bridge://secure' : host.trim(),
-          apiKey: provider === 'Local' ? 'local-token-simulated' : apiKey.trim(),
+          host: (provider === 'Local' || provider === 'SQLite') ? 'local-bridge://secure' : host.trim(),
+          apiKey: (provider === 'Local' || provider === 'SQLite') ? 'local-token-simulated' : apiKey.trim(),
           databaseName: databaseName.trim(),
-          username: provider === 'Local' ? 'local_client' : username.trim(),
+          username: (provider === 'Local' || provider === 'SQLite') ? 'local_client' : username.trim(),
           displayLanguage: language,
           localSchema: localFileSchema,
         }),
@@ -200,6 +213,25 @@ export default function RegisterTenantModal({
 
     if (!name.trim()) {
       setError(language === 'ar' ? 'اسم المستأجر مطلوب' : 'Tenant Name is required');
+      setIsSubmitting(false);
+      return;
+    }
+
+    // Check user subscription limits for tenant data pipelines
+    const userPlan = (userProfile?.plan || 'monthly').toLowerCase();
+    let tenantLimit = 1;
+    if (userPlan === 'annual' || userPlan === 'growth') {
+      tenantLimit = 5;
+    } else if (userPlan === 'enterprise') {
+      tenantLimit = Infinity;
+    }
+
+    if (tenants.length >= tenantLimit) {
+      setError(
+        language === 'ar'
+          ? `عذراً، لقد تجاوزت الحد الأقصى لعدد مصادر البيانات ومساحات العمل المسموح بها لباقتك الحالية (${tenantLimit === Infinity ? 'غير محدود' : tenantLimit} مصادر). يرجى ترقية باقة الاشتراك لزيادة حدودك.`
+          : `Sorry, you have exceeded the maximum connected data sources allowed for your current subscription tier (${tenantLimit === Infinity ? 'Unlimited' : tenantLimit} pipelines). Please upgrade your plan to increase limits.`
+      );
       setIsSubmitting(false);
       return;
     }
@@ -468,10 +500,11 @@ export default function RegisterTenantModal({
                       onChange={(e) => handleProviderChange(e.target.value)}
                       className="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500/80 rounded-xl px-4 py-2.5 text-sm text-slate-200 focus:outline-none appearance-none cursor-pointer"
                     >
-                      <option value="Odoo">Odoo CRM</option>
+                      <option value="Odoo">{language === 'ar' ? 'نظام مبيعات Odoo' : 'Odoo CRM'}</option>
                       <option value="PostgreSQL">PostgreSQL</option>
                       <option value="MongoDB">MongoDB</option>
-                      <option value="Shopify">Shopify E-Commerce</option>
+                      <option value="Shopify">{language === 'ar' ? 'متجر شوبيفاي الإلكتروني' : 'Shopify E-Commerce'}</option>
+                      <option value="SQLite">{language === 'ar' ? 'قاعدة بيانات SQLite محلية' : 'SQLite (Local DB)'}</option>
                       <option value="Local">{t.localDatabaseOption}</option>
                     </select>
                     <div className={`absolute inset-y-0 ${language === 'ar' ? 'left-3' : 'right-3'} flex items-center pointer-events-none text-slate-500 text-[10px]`}>
@@ -481,7 +514,7 @@ export default function RegisterTenantModal({
                 </div>
               </div>
 
-              {provider === 'Local' ? (
+              {(provider === 'Local' || provider === 'SQLite') ? (
                 /* Drag-and-Drop Local DB File Selector */
                 <div className="space-y-4">
                   <div

@@ -16,9 +16,9 @@
 :root {
   --bg-primary: #f8fafc;
   --bg-secondary: #ffffff;
-  --text-primary: #0f172a;
-  --text-secondary: #475569;
-  --border-color: #e2e8f0;
+  --text-primary: #000000;
+  --text-secondary: #000000;
+  --border-color: #cbd5e1;
 
   /* Redefine slate colors for LIGHT mode to turn dark elements into crisp modern light design */
   --color-slate-50: #020617;
@@ -75,10 +75,16 @@ html:not(.dark) .border-slate-800 {
   border-color: #e2e8f0 !important;
 }
 html:not(.dark) .text-slate-400 {
-  color: #64748b !important;
+  color: #2d3748 !important;
 }
 html:not(.dark) .text-slate-300 {
-  color: #334155 !important;
+  color: #000000 !important;
+}
+html:not(.dark) .text-slate-200 {
+  color: #000000 !important;
+}
+html:not(.dark) .text-slate-500 {
+  color: #1a1a1a !important;
 }
 html:not(.dark) .bg-slate-950\/80 {
   background-color: rgba(255, 255, 255, 0.85) !important;
@@ -127,10 +133,10 @@ html:not(.dark) .text-rose-300 {
 
 /* Exclude colored buttons, gradient headers, and status pills from text-white overrides */
 html:not(.dark) .text-white:not(button):not(button *):not([class*="bg-indigo"]):not([class*="bg-indigo"] *):not([class*="bg-emerald"]):not([class*="bg-emerald"] *):not([class*="bg-rose"]):not([class*="bg-rose"] *):not([class*="bg-violet"]):not([class*="bg-violet"] *):not([class*="bg-gradient"]):not([class*="bg-gradient"] *):not(.bg-teal-500 *):not(.bg-emerald-500 *) {
-  color: #0f172a !important;
+  color: #000000 !important;
 }
 html:not(.dark) .hover\:text-white:hover:not(button):not(button *):not([class*="bg-indigo"]):not([class*="bg-indigo"] *):not([class*="bg-emerald"]):not([class*="bg-emerald"] *):not([class*="bg-rose"]):not([class*="bg-rose"] *):not([class*="bg-violet"]):not([class*="bg-violet"] *) {
-  color: #0f172a !important;
+  color: #000000 !important;
 }
 
 /* Beautiful soft modern shadows in light mode */

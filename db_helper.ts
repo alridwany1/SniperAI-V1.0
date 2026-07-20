@@ -1,19 +1,36 @@
 import { Client } from "pg";
 
 export function buildConnectionString(dataSource: any) {
-  let host = dataSource.host.trim();
-  let dbName = dataSource.databaseName;
-  if (host.includes('/')) {
-      const parts = host.split('/');
-      host = parts[0];
+  const host = dataSource.host!.trim();
+  const lowercaseHost = host.toLowerCase();
+  
+  if ((lowercaseHost.startsWith('postgresql://') || lowercaseHost.startsWith('postgres://')) && host.includes('@')) {
+    if (!host.includes('sslmode=')) {
+      const separator = host.includes('?') ? '&' : '?';
+      return `${host}${separator}sslmode=require`;
+    }
+    return host;
+  }
+  
+  let cleanHost = host;
+  if (cleanHost.startsWith('postgresql://')) {
+    cleanHost = cleanHost.slice('postgresql://'.length);
+  } else if (cleanHost.startsWith('postgres://')) {
+    cleanHost = cleanHost.slice('postgres://'.length);
+  }
+
+  let dbName = dataSource.databaseName || "";
+  if (cleanHost.includes('/')) {
+      const parts = cleanHost.split('/');
+      cleanHost = parts[0];
       if (parts[1] && !dbName) {
           dbName = parts[1];
       }
   }
-  const port = host.includes(':') ? '' : ':5432';
+  const port = cleanHost.includes(':') ? '' : ':5432';
   const encodedUser = encodeURIComponent(dataSource.username || '');
   const encodedPass = encodeURIComponent(dataSource.apiKey || '');
-  return `postgresql://${encodedUser}:${encodedPass}@${host}${port}/${dbName}?sslmode=require`;
+  return `postgresql://${encodedUser}:${encodedPass}@${cleanHost}${port}/${dbName}?sslmode=require`;
 }
 
 /**

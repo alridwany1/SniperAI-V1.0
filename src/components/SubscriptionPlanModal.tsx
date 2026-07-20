@@ -27,6 +27,7 @@ export default function SubscriptionPlanModal({
   const [step, setStep] = useState<'selection' | 'payment'>('selection');
   const [selectedPlan, setSelectedPlan] = useState<string>('annual');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [billingCycle, setBillingCycle] = useState<'monthly' | 'yearly'>('yearly');
 
   const handleProceed = () => {
     if (step === 'selection') {
@@ -66,77 +67,110 @@ export default function SubscriptionPlanModal({
     {
       id: 'monthly',
       name: t.monthlyPlanName,
-      price: t.monthlyPlanPrice,
+      price: '$0',
       period: isRTL ? '/ شهرياً' : '/ mo',
       badge: null,
       icon: Cpu,
-      color: 'from-blue-600 to-cyan-500',
-      borderGlow: 'hover:border-blue-500/40',
+      color: 'from-slate-600 to-slate-400',
+      borderGlow: 'hover:border-slate-500/40',
       bgCard: 'bg-slate-950/60',
-      features: isRTL ? [
-        'ربط مصدر نظام إدارة علاقات عملاء واحد (Odoo / PostgreSQL)',
-        'تحليل ما يصل إلى 10,000 سجل مبيعات شهرياً',
-        'التنبؤ العصبي القياسي للمبيعات (30 يوماً)',
-        'مستخدم مشرف واحد',
-        'الدعم الفني القياسي عبر البريد الإداري'
+      limits: isRTL ? [
+        { label: 'مصادر البيانات المتاحة', value: 'شركة واحدة (Single Tenant)' },
+        { label: 'حد سجلات المبيعات', value: '10,000 سجل / شهرياً' },
+        { label: 'المعاملات الشاذة', value: 'حتى 5 شهرياً' },
+        { label: 'مدى التنبؤ العصبي', value: 'أساسي' }
       ] : [
-        '1 Connected CRM Source (Odoo / PostgreSQL)',
-        'Up to 10,000 Sales Records / month',
-        'Standard Neural Sales Forecasting (30 days)',
-        '1 Admin seat',
-        'Standard Email Support'
+        { label: 'Connected CRM Sources', value: '1 Tenant Limit' },
+        { label: 'Monthly Sales Records', value: '10,000 records / mo' },
+        { label: 'Anomaly Detection', value: 'Up to 5 / month' },
+        { label: 'Neural Forecast Window', value: 'Basic AI Trend' }
+      ],
+      features: isRTL ? [
+        'ربط شركة واحدة (Single Tenant)',
+        'تنبؤ مالي ذكي أساسي',
+        'كشف حتى 5 معاملات شاذة شهرياً',
+        'استعلامات محدودة لمساعد الذكاء الاصطناعي',
+        'دعم عبر البريد الإلكتروني'
+      ] : [
+        '1 Tenant connection limit',
+        'Basic AI trend forecasting',
+        'Detect up to 5 anomalies / mo',
+        'Standard Gemini query limit',
+        'Email customer support'
       ]
     },
     {
       id: 'annual',
       name: t.annualPlanName,
-      price: t.annualPlanPrice,
-      period: isRTL ? '/ شهرياً (دفع سنوي)' : '/ mo (billed annually)',
+      price: billingCycle === 'yearly' ? '$39' : '$49',
+      period: billingCycle === 'yearly' ? (isRTL ? '/ شهرياً (دفع سنوي)' : '/ mo (billed annually)') : (isRTL ? '/ شهرياً' : '/ mo'),
       badge: t.mostPopular,
       icon: Sparkles,
       color: 'from-indigo-600 to-violet-500',
       borderGlow: 'border-indigo-500/50 hover:border-indigo-500/80 shadow-lg shadow-indigo-950/20',
       bgCard: 'bg-slate-950/90 relative overflow-hidden ring-1 ring-indigo-500/30',
-      features: isRTL ? [
-        'ربط ما يصل إلى 5 مصادر بيانات / مستأجرين',
-        'تحليل ما يصل إلى 150,000 سجل مبيعات شهرياً',
-        'تنبؤ تنبؤي متقدم بالتعلم العميق مع حدود ثقة',
-        'ذكاء مالي فوري مع مساعد الذكاء الاصطناعي 24/7',
-        'ما يصل إلى 5 مستخدمين تنفيذيّين',
-        'دعم فني ذو أولوية فائقة (أقل من ساعتين)'
+      limits: isRTL ? [
+        { label: 'مصادر البيانات المتاحة', value: 'حتى 5 مصادر (Multi-Tenant)' },
+        { label: 'حد سجلات المبيعات', value: '150,000 سجل / شهرياً' },
+        { label: 'المعاملات الشاذة', value: 'غير محدود بالكامل' },
+        { label: 'مدى التنبؤ العصبي', value: '30 يوماً مع حدود الثقة' }
       ] : [
-        'Up to 5 Connected Data Sources / Tenants',
-        'Up to 150,000 Sales Records / month',
-        'Deep Learning Predictive Forecasting with bounds',
-        '24/7 AI-Agent Chatbot Financial Intelligence',
-        'Up to 5 Executive Seats',
-        'Priority Support (Under 2 hours)'
+        { label: 'Connected CRM Sources', value: 'Up to 5 Tenants' },
+        { label: 'Monthly Sales Records', value: '150,000 records / mo' },
+        { label: 'Anomaly Detection', value: 'Unlimited Audits & Advice' },
+        { label: 'Neural Forecast Window', value: '30-Day + Confidence Bounds' }
+      ],
+      features: isRTL ? [
+        'ربط حتى 5 شركات مختلفة (Multi-Tenant)',
+        'تنبؤ ذكي متقدم بـ 30 يوماً مع حدود الثقة',
+        'كشف غير محدود للمعاملات الشاذة وتحليل أسبابها',
+        'استعلامات غير محدودة لمساعد الذكاء الاصطناعي',
+        'ربط مباشر مع Odoo و Shopify وقواعد البيانات',
+        'دعم فني ذو أولوية على مدار الساعة'
+      ] : [
+        'Up to 5 Tenant connections',
+        'Full 30-Day forecasting with bounds',
+        'Unlimited anomaly audits & advice',
+        'Uncapped Gemini Strategist queries',
+        'Full CRM federation (Odoo, Shopify)',
+        'Priority 24/7 technical support'
       ]
     },
     {
       id: 'enterprise',
       name: t.enterprisePlanName,
-      price: t.enterprisePlanPrice,
-      period: '',
+      price: billingCycle === 'yearly' ? '$149' : '$189',
+      period: billingCycle === 'yearly' ? (isRTL ? '/ شهرياً (دفع سنوي)' : '/ mo (billed annually)') : (isRTL ? '/ شهرياً' : '/ mo'),
       badge: null,
       icon: Shield,
       color: 'from-amber-600 to-rose-500',
       borderGlow: 'hover:border-amber-500/40',
       bgCard: 'bg-slate-950/60',
-      features: isRTL ? [
-        'مصادر بيانات ومستأجرون متعددون غير محدودين',
-        'سجلات مبيعات وقنوات بيانات مخصصة غير محدودة',
-        'ضبط دقيق لنماذج تعلم الآلة وعمليات نشر محلية',
-        'تقارير رؤى استراتيجية تنفيذية مع تصدير CSV',
-        'مستخدمون غير محدودين مع تحكم بالصلاحيات (RBAC)',
-        'مهندس حلول مخصص ودعم فني مع اتفاقية مستوى الخدمة'
+      limits: isRTL ? [
+        { label: 'مصادر البيانات المتاحة', value: 'عدد غير محدود من الفروع والشركات' },
+        { label: 'حد سجلات المبيعات', value: 'غير محدود بالكامل' },
+        { label: 'مستخدمين مشرفين', value: 'غير محدود مع صلاحيات مخصصة' },
+        { label: 'مدى التنبؤ العصبي', value: 'تخصيص كامل وتدريب خاص' }
       ] : [
-        'Unlimited Connected Data Sources & Multi-tenants',
-        'Unlimited Sales Records & Custom Data Pipelines',
-        'Custom ML Model Fine-Tuning & Local Deployments',
-        'Strategic Executive Insights Reports with CSV Export',
-        'Unlimited Seats with Role-Based Access Control',
-        'Dedicated Solutions Architect & SLA Support'
+        { label: 'Connected CRM Sources', value: 'Unlimited Tenants' },
+        { label: 'Monthly Sales Records', value: 'Uncapped / Month' },
+        { label: 'User Controls', value: 'Unlimited (RBAC)' },
+        { label: 'Neural Forecast Window', value: 'Custom Trained Models' }
+      ],
+      features: isRTL ? [
+        'عدد غير محدود من الشركات والفروع',
+        'تخصيص نماذج التنبؤ وتدريب الخوارزميات',
+        'واجهة برمجة تطبيقات (API) مخصصة للنظام',
+        'تشفير بيانات عسكري عالي الأمان',
+        'مدير حسابات استراتيجي مخصص',
+        'خدمة تطبيق وتهيئة مخصصة من فريقنا'
+      ] : [
+        'Unlimited Tenants & Subsidiaries',
+        'Custom training for forecast models',
+        'Dedicated secure system APIs',
+        'Military-grade data encryption',
+        'Dedicated Enterprise account executive',
+        'Tailored on-premise onboarding'
       ]
     }
   ];
@@ -170,6 +204,30 @@ export default function SubscriptionPlanModal({
                 <p className="text-xs md:text-sm text-slate-400 mt-2.5 font-light leading-relaxed">
                   {t.choosePlanSubtitle}
                 </p>
+              </div>
+
+              {/* Billing Cycle Toggle */}
+              <div className="flex items-center justify-center gap-3 mb-8 relative z-10">
+                <span className={`text-xs ${billingCycle === 'monthly' ? 'text-white font-bold' : 'text-slate-400 font-light'}`}>
+                  {isRTL ? 'الدفع الشهري' : 'Monthly Billing'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setBillingCycle(billingCycle === 'monthly' ? 'yearly' : 'monthly')}
+                  className="w-11 h-6 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-full p-0.5 transition-all focus:outline-none flex items-center cursor-pointer"
+                >
+                  <div 
+                    className={`w-4.5 h-4.5 bg-indigo-500 rounded-full transition-all transform ${
+                      billingCycle === 'yearly' ? (isRTL ? '-translate-x-5' : 'translate-x-5') : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+                <span className={`text-xs ${billingCycle === 'yearly' ? 'text-white font-bold' : 'text-slate-400 font-light'} flex items-center gap-1`}>
+                  <span>{isRTL ? 'الدفع السنوي' : 'Yearly Billing'}</span>
+                  <span className="text-[9px] font-bold bg-indigo-500/10 border border-indigo-500/25 text-indigo-400 px-1.5 py-0.5 rounded-full">
+                    {isRTL ? 'توفير ٢٠٪' : 'Save 20%'}
+                  </span>
+                </span>
               </div>
 
               {/* Pricing Grid */}
@@ -229,6 +287,21 @@ export default function SubscriptionPlanModal({
                         </span>
                       </div>
 
+                      {/* Quotas & Limits */}
+                      <div className="mb-5 bg-[#0b101c]/60 rounded-2xl p-3.5 border border-slate-900 text-start space-y-2">
+                        <span className="text-[10px] uppercase font-mono tracking-wider text-slate-500 font-bold block">
+                          {isRTL ? 'الحدود المعتمدة في الخطة' : 'Plan Quotas & Limits'}
+                        </span>
+                        <div className="grid grid-cols-2 gap-2">
+                          {plan.limits.map((lim, lIdx) => (
+                            <div key={lIdx} className="bg-slate-950/80 p-2.5 rounded-xl border border-slate-900">
+                              <span className="text-[9px] text-slate-400 block truncate leading-none mb-1.5">{lim.label}</span>
+                              <span className="text-[10.5px] font-bold text-indigo-400 font-sans block leading-tight">{lim.value}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
                       {/* Features */}
                       <ul className="space-y-3.5 flex-1 mb-6">
                         {plan.features.map((feat, idx) => (
@@ -259,6 +332,125 @@ export default function SubscriptionPlanModal({
                     </div>
                   );
                 })}
+              </div>
+
+              {/* Plan Comparison Matrix */}
+              <div className="mt-4 mb-8 relative z-10 border border-slate-900/80 bg-[#070b13] rounded-3xl p-5 md:p-6.5 text-start">
+                <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3 mb-5 border-b border-slate-900 pb-4">
+                  <div>
+                    <h3 className="text-sm font-bold text-white tracking-tight">
+                      {isRTL ? 'مصفوفة مقارنة الحدود والميزات التفصيلية' : 'Detailed Limits & Feature Comparison Matrix'}
+                    </h3>
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      {isRTL 
+                        ? 'مقارنة شاملة بين حدود الباقات المختلفة لمساعدتك في اتخاذ القرار الأمثل لمؤسستك.' 
+                        : 'Side-by-side limit breakdowns to find the perfect fit for your enterprise operations.'}
+                    </p>
+                  </div>
+                  <div className="px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-[10px] font-mono text-indigo-400 font-semibold uppercase">
+                    {isRTL ? 'التحليل والمقارنة' : 'Compare & Contrast'}
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-start text-xs border-collapse min-w-[600px]">
+                    <thead>
+                      <tr className="border-b border-slate-900 text-slate-400 font-mono text-[10px] uppercase tracking-wider text-start">
+                        <th className="py-3 px-4 font-semibold text-start">{isRTL ? 'المواصفة / حدود الباقة' : 'Limit Specification'}</th>
+                        <th className="py-3 px-4 font-semibold text-start text-slate-400">{isRTL ? 'الباقة المبتدئة ($0)' : 'Starter Sandbox ($0)'}</th>
+                        <th className="py-3 px-4 font-semibold text-start text-indigo-400">{isRTL ? 'باقة النمو ($39/شهرياً)' : 'Growth Professional ($39/mo)'}</th>
+                        <th className="py-3 px-4 font-semibold text-start text-amber-500">{isRTL ? 'باقة المؤسسات ($149/شهرياً)' : 'Enterprise Suite ($149/mo)'}</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-900/50 text-slate-300">
+                      {/* Section 1: Data Limits */}
+                      <tr className="bg-slate-950/40 font-bold text-[10px] text-slate-400 uppercase tracking-wider">
+                        <td colSpan={4} className="py-2.5 px-4 text-start">{isRTL ? 'حدود البيانات والمزامنة' : 'Data Streams & Storage Limits'}</td>
+                      </tr>
+                      <tr>
+                        <td className="py-3 px-4 font-medium text-white">{isRTL ? 'مصادر البيانات والشركات المتصلة' : 'Connected CRM Sources'}</td>
+                        <td className="py-3 px-4 text-slate-400">1 {isRTL ? 'شركة واحدة' : 'Tenant Limit'}</td>
+                        <td className="py-3 px-4 text-indigo-300 font-medium">{isRTL ? 'حتى 5 مصادر متزامنة' : 'Up to 5 Tenants'}</td>
+                        <td className="py-3 px-4 text-amber-400 font-semibold">{isRTL ? 'غير محدود (Multi-Tenant)' : 'Unlimited Tenants'}</td>
+                      </tr>
+                      <tr>
+                        <td className="py-3 px-4 font-medium text-white">{isRTL ? 'حد سجلات المبيعات شهرياً' : 'Monthly Sales Record Vol'}</td>
+                        <td className="py-3 px-4 text-slate-400">10,000 {isRTL ? 'سجل' : 'records'}</td>
+                        <td className="py-3 px-4 text-indigo-300 font-medium">150,000 {isRTL ? 'سجل' : 'records'}</td>
+                        <td className="py-3 px-4 text-amber-400 font-semibold">{isRTL ? 'غير محدود بالكامل' : 'Unlimited (No Cap)'}</td>
+                      </tr>
+                      <tr>
+                        <td className="py-3 px-4 font-medium text-white">{isRTL ? 'تكامل الأنظمة وقواعد البيانات' : 'CRM & Odoo Direct Connect'}</td>
+                        <td className="py-3 px-4 text-slate-400">{isRTL ? 'متاح (أساسي)' : 'Available (Basic)'}</td>
+                        <td className="py-3 px-4 text-indigo-300">{isRTL ? 'ربط مباشر متكامل' : 'Full CRM Integration'}</td>
+                        <td className="py-3 px-4 text-amber-400 font-semibold">{isRTL ? 'تكامل مخصص مع أي نظام' : 'Custom Tailored API Pipelines'}</td>
+                      </tr>
+
+                      {/* Section 2: AI & Forecast Quotas */}
+                      <tr className="bg-slate-950/40 font-bold text-[10px] text-slate-400 uppercase tracking-wider">
+                        <td colSpan={4} className="py-2.5 px-4 text-start">{isRTL ? 'خوارزميات الذكاء الاصطناعي والتنبؤ' : 'AI Models & Neural Quotas'}</td>
+                      </tr>
+                      <tr>
+                        <td className="py-3 px-4 font-medium text-white">{isRTL ? 'محرك التنبؤ بالمبيعات' : 'Predictive Forecast Engine'}</td>
+                        <td className="py-3 px-4 text-slate-400">{isRTL ? 'أساسي' : 'Basic AI Trend'}</td>
+                        <td className="py-3 px-4 text-indigo-300 font-medium">{isRTL ? '30 يوماً مع حدود الثقة' : '30-Day + Confidence Bounds'}</td>
+                        <td className="py-3 px-4 text-amber-400 font-semibold">{isRTL ? 'تخصيص كامل وتدريب خاص للنماذج' : 'Custom Fine-Tuning & Local Models'}</td>
+                      </tr>
+                      <tr>
+                        <td className="py-3 px-4 font-medium text-white">{isRTL ? 'كشف العمليات غير العادية والمعاملات الشاذة' : 'Anomaly Detection Audits'}</td>
+                        <td className="py-3 px-4 text-slate-400">{isRTL ? 'حتى 5 عمليات شهرياً' : 'Up to 5 anomalies / mo'}</td>
+                        <td className="py-3 px-4 text-indigo-300 font-medium">{isRTL ? 'غير محدود بالكامل' : 'Unlimited Audits & Advice'}</td>
+                        <td className="py-3 px-4 text-amber-400 font-semibold">{isRTL ? 'غير محدود مع تنبيهات ذكية فورية' : 'Unlimited + Custom Alert Triggers'}</td>
+                      </tr>
+                      <tr>
+                        <td className="py-3 px-4 font-medium text-white">{isRTL ? 'استعلامات مساعد الذكاء الاصطناعي' : 'Gemini Strategist Chat Queries'}</td>
+                        <td className="py-3 px-4 text-slate-400">{isRTL ? 'محدودة' : 'Standard Limit'}</td>
+                        <td className="py-3 px-4 text-indigo-300 font-medium">{isRTL ? 'غير محدودة بالكامل' : 'Uncapped Queries'}</td>
+                        <td className="py-3 px-4 text-amber-400 font-semibold">{isRTL ? 'مساعد ذكاء اصطناعي مخصص للمؤسسة' : 'Custom Brand Persona & Tools'}</td>
+                      </tr>
+
+                      {/* Section 3: Users & Access Controls */}
+                      <tr className="bg-slate-950/40 font-bold text-[10px] text-slate-400 uppercase tracking-wider">
+                        <td colSpan={4} className="py-2.5 px-4 text-start">{isRTL ? 'المقاعد وإدارة الصلاحيات والأمان' : 'User Seats & Security'}</td>
+                      </tr>
+                      <tr>
+                        <td className="py-3 px-4 font-medium text-white">{isRTL ? 'المقاعد والمستخدمين المشغلين' : 'User Seats'}</td>
+                        <td className="py-3 px-4 text-slate-400">1 {isRTL ? 'مستخدم واحد' : 'User seat'}</td>
+                        <td className="py-3 px-4 text-indigo-300 font-medium">5 {isRTL ? 'مستخدمين' : 'User Seats'}</td>
+                        <td className="py-3 px-4 text-amber-400 font-semibold">{isRTL ? 'غير محدود بالكامل' : 'Unlimited Seats (RBAC)'}</td>
+                      </tr>
+                      <tr>
+                        <td className="py-3 px-4 font-medium text-white">{isRTL ? 'سجلات تدقيق العمليات الإدارية (Access Logs)' : 'Administrative Access Audit Logs'}</td>
+                        <td className="py-3 px-4 text-slate-500">{isRTL ? 'غير متوفر' : 'Not Available'}</td>
+                        <td className="py-3 px-4 text-indigo-300 font-medium">{isRTL ? 'سجل كامل للعمليات الإدارية' : 'Full Admin Logs'}</td>
+                        <td className="py-3 px-4 text-amber-400 font-semibold">{isRTL ? 'سجل كامل + إرسال تنبيهات بريدية فورية' : 'Full Logs + Real-time Alerts'}</td>
+                      </tr>
+                      <tr>
+                        <td className="py-3 px-4 font-medium text-white">{isRTL ? 'واجهات برمجية API لإدخال المبيعات' : 'Programmatic API Data Insertion'}</td>
+                        <td className="py-3 px-4 text-slate-500">{isRTL ? 'غير متوفر' : 'Not Available'}</td>
+                        <td className="py-3 px-4 text-slate-500">{isRTL ? 'غير متوفر' : 'Not Available'}</td>
+                        <td className="py-3 px-4 text-amber-400 font-semibold">{isRTL ? 'متوفرة بالكامل (توثيق برمجيات SniperAI)' : 'Full SDK, Docs & OAuth Integration'}</td>
+                      </tr>
+                      <tr>
+                        <td className="py-3 px-4 font-medium text-white">{isRTL ? 'أمان وحماية البيانات' : 'Data Encryption'}</td>
+                        <td className="py-3 px-4 text-slate-400">{isRTL ? 'أمان قياسي' : 'Standard Secure'}</td>
+                        <td className="py-3 px-4 text-indigo-300">{isRTL ? 'تشفير متطور' : 'Advanced Encryption'}</td>
+                        <td className="py-3 px-4 text-amber-400 font-semibold">{isRTL ? 'تشفير عسكري فائق الأمان' : 'Military-Grade Secure Vault'}</td>
+                      </tr>
+
+                      {/* Section 4: Support */}
+                      <tr className="bg-slate-950/40 font-bold text-[10px] text-slate-400 uppercase tracking-wider">
+                        <td colSpan={4} className="py-2.5 px-4 text-start">{isRTL ? 'الدعم واتفاقيات الخدمة SLA' : 'Support & SLA'}</td>
+                      </tr>
+                      <tr>
+                        <td className="py-3 px-4 font-medium text-white">{isRTL ? 'قناة الدعم الفني' : 'Technical Support Support'}</td>
+                        <td className="py-3 px-4 text-slate-400">{isRTL ? 'عبر البريد الإلكتروني' : 'Email Support'}</td>
+                        <td className="py-3 px-4 text-indigo-300 font-medium">{isRTL ? 'أولوية فائقة على مدار الساعة 24/7' : 'Priority 24/7 Support'}</td>
+                        <td className="py-3 px-4 text-amber-400 font-semibold">{isRTL ? 'مدير حسابات استراتيجي ومرافقة مخصصة' : 'Dedicated Executive Onboarding & SLA'}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </>
           ) : (
@@ -299,11 +491,10 @@ export default function SubscriptionPlanModal({
               <div className="flex items-center gap-2 mt-0.5">
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
                 <span className="text-sm font-bold text-white font-display">
-                  {selectedPlan === 'annual' ? t.annualPlanName : selectedPlan === 'monthly' ? t.monthlyPlanName : t.enterprisePlanName}
+                  {plans.find(p => p.id === selectedPlan)?.name}
                 </span>
                 <span className="text-xs text-indigo-400 font-mono font-medium">
-                  ({selectedPlan === 'annual' ? t.annualPlanPrice : selectedPlan === 'monthly' ? t.monthlyPlanPrice : t.enterprisePlanPrice}
-                  {selectedPlan !== 'enterprise' ? (isRTL ? '/شهرياً' : '/mo') : ''})
+                  ({plans.find(p => p.id === selectedPlan)?.price} {plans.find(p => p.id === selectedPlan)?.period})
                 </span>
               </div>
             </div>

@@ -1,4 +1,7 @@
+import { useToast } from './components/Toast';
+import { useApp } from './context/AppContext';
 import React, { useState, useEffect } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { Tenant, SalesRecord, MetricSummary, ForecastRecord, ChatMessage, CRMDeal, AppNotification, SyncHistoryEntry } from './types';
 import FilterBar from './components/FilterBar';
 import KPICards from './components/KPICards';
@@ -8,6 +11,7 @@ import StrategicReport from './components/StrategicReport';
 import CRMTracker from './components/CRMTracker';
 import AnomaliesList from './components/AnomaliesList';
 import AuthPage from './components/AuthPage';
+import MarketingSplash from './components/MarketingSplash';
 import RegisterTenantModal from './components/RegisterTenantModal';
 import TenantSettingsModal from './components/TenantSettingsModal';
 import BillingDashboard from './components/BillingDashboard';
@@ -22,31 +26,118 @@ import CommandPalette from './components/CommandPalette';
 import OnboardingTour from './components/OnboardingTour';
 import AddTenantScreen from './components/AddTenantScreen';
 import InventoryManagement from './components/InventoryManagement';
+import LegalAndApiModal from './components/LegalAndApiModal';
 import { translations, Language } from './utils/translations';
-import { Layers, Shield, Sparkles, TrendingUp, Cpu, Radio, Globe, LogOut, PlusCircle, Users, CreditCard, User, Database, RefreshCw, Package } from 'lucide-react';
+import { Layers, Shield, Sparkles, TrendingUp, Cpu, Radio, Globe, LogOut, PlusCircle, Users, CreditCard, User, Database, RefreshCw, Package, Settings, Eye, EyeOff, ArrowUp, ArrowDown, GripVertical, SlidersHorizontal } from 'lucide-react';
 import { addAuditLog } from './utils/auditLogger';
 import sniperLogo from './assets/images/sniper_ai_logo_1783155755401.jpg';
 import { db, handleFirestoreError, OperationType } from './utils/firebase';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 
 export default function App() {
+  const { showToast } = useToast();
+  const {
+    userEmail, setUserEmail,
+    isAuthenticated, setIsAuthenticated,
+    activeTenant, setActiveTenant,
+    selectedTenantId, setSelectedTenantId,
+    tenants, setTenants,
+    language, setLanguage
+  } = useApp();
   // Authentication & language states
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    return localStorage.getItem('isAuthenticated') === 'true';
+  const [showSplash, setShowSplash] = useState<boolean>(() => {
+    return !sessionStorage.getItem('has_seen_splash');
   });
-
-  const [userEmail, setUserEmail] = useState<string>(() => {
-    return localStorage.getItem('userEmail') || '';
-  });
+  
 
   const [isOnboardModalOpen, setIsOnboardModalOpen] = useState<boolean>(false);
   const [isSubscriptionModalOpen, setIsSubscriptionModalOpen] = useState<boolean>(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
+  const [isLegalModalOpen, setIsLegalModalOpen] = useState<boolean>(false);
+  const [legalModalTab, setLegalModalTab] = useState<'privacy' | 'terms' | 'apiSpecs'>('privacy');
   const [runTour, setRunTour] = useState<boolean>(false);
 
-  const [language, setLanguage] = useState<Language>(() => {
-    return (localStorage.getItem('language') || 'en') as Language;
-  });
+  // Dashboard layout configuration state
+  interface DashboardWidget {
+    id: string;
+    nameEn: string;
+    nameAr: string;
+    visible: boolean;
+  }
+
+  const [dashboardWidgets, setDashboardWidgets] = useState<DashboardWidget[]>([
+    { id: 'kpi_cards', nameEn: 'KPI Summary Cards', nameAr: 'بطاقات مؤشرات الأداء الرئيسي', visible: true },
+    { id: 'sales_chart', nameEn: 'Sales Chart & AI Forecast', nameAr: 'مخطط المبيعات والتنبؤ الذكي', visible: true },
+    { id: 'pie_chart', nameEn: 'Product Distribution', nameAr: 'توزيع مبيعات المنتجات', visible: true },
+    { id: 'strategic_report', nameEn: 'Strategic Executive Report', nameAr: 'التقرير الاستراتيجي التنفيذي', visible: true },
+    { id: 'crm_tracker', nameEn: 'CRM Deals Tracker', nameAr: 'مستكشف صفقات العملاء CRM', visible: true },
+    { id: 'anomalies', nameEn: 'Financial Anomaly Audit', nameAr: 'تدقيق المعاملات المالية الشاذة', visible: true },
+  ]);
+  const [isCustomizerOpen, setIsCustomizerOpen] = useState<boolean>(false);
+
+  // Load custom workspace configuration
+  useEffect(() => {
+    const saved = localStorage.getItem('sniper_dashboard_layout');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const merged = [
+            { id: 'kpi_cards', nameEn: 'KPI Summary Cards', nameAr: 'بطاقات مؤشرات الأداء الرئيسي', visible: true },
+            { id: 'sales_chart', nameEn: 'Sales Chart & AI Forecast', nameAr: 'مخطط المبيعات والتنبؤ الذكي', visible: true },
+            { id: 'pie_chart', nameEn: 'Product Distribution', nameAr: 'توزيع مبيعات المنتجات', visible: true },
+            { id: 'strategic_report', nameEn: 'Strategic Executive Report', nameAr: 'التقرير الاستراتيجي التنفيذي', visible: true },
+            { id: 'crm_tracker', nameEn: 'CRM Deals Tracker', nameAr: 'مستكشف صفقات العملاء CRM', visible: true },
+            { id: 'anomalies', nameEn: 'Financial Anomaly Audit', nameAr: 'تدقيق المعاملات المالية الشاذة', visible: true },
+          ].map(def => {
+            const match = parsed.find((p: any) => p.id === def.id);
+            const isVisible = match ? match.visible : def.visible;
+            const orderIdx = match ? parsed.findIndex((p: any) => p.id === def.id) : 99;
+            return { ...def, visible: isVisible, orderIdx };
+          });
+          merged.sort((a, b) => a.orderIdx - b.orderIdx);
+          setDashboardWidgets(merged.map(({ orderIdx, ...rest }) => rest));
+        }
+      } catch (e) {
+        console.error("Error reading saved layout:", e);
+      }
+    }
+  }, []);
+
+  const handleToggleWidget = (id: string) => {
+    const updated = dashboardWidgets.map(w => w.id === id ? { ...w, visible: !w.visible } : w);
+    setDashboardWidgets(updated);
+    localStorage.setItem('sniper_dashboard_layout', JSON.stringify(updated));
+  };
+
+  const handleMoveWidget = (index: number, direction: 'up' | 'down') => {
+    const targetIdx = direction === 'up' ? index - 1 : index + 1;
+    if (targetIdx < 0 || targetIdx >= dashboardWidgets.length) return;
+    
+    const updated = [...dashboardWidgets];
+    const temp = updated[index];
+    updated[index] = updated[targetIdx];
+    updated[targetIdx] = temp;
+    
+    setDashboardWidgets(updated);
+    localStorage.setItem('sniper_dashboard_layout', JSON.stringify(updated));
+  };
+
+  const handleResetLayout = () => {
+    const defaults = [
+      { id: 'kpi_cards', nameEn: 'KPI Summary Cards', nameAr: 'بطاقات مؤشرات الأداء الرئيسي', visible: true },
+      { id: 'sales_chart', nameEn: 'Sales Chart & AI Forecast', nameAr: 'مخطط المبيعات والتنبؤ الذكي', visible: true },
+      { id: 'pie_chart', nameEn: 'Product Distribution', nameAr: 'توزيع مبيعات المنتجات', visible: true },
+      { id: 'strategic_report', nameEn: 'Strategic Executive Report', nameAr: 'التقرير الاستراتيجي التنفيذي', visible: true },
+      { id: 'crm_tracker', nameEn: 'CRM Deals Tracker', nameAr: 'مستكشف صفقات العملاء CRM', visible: true },
+      { id: 'anomalies', nameEn: 'Financial Anomaly Audit', nameAr: 'تدقيق المعاملات المالية الشاذة', visible: true },
+    ];
+    setDashboardWidgets(defaults);
+    localStorage.setItem('sniper_dashboard_layout', JSON.stringify(defaults));
+    showToast(language === 'ar' ? 'تمت استعادة تخطيط لوحة التحكم الافتراضي' : 'Default dashboard layout restored', 'success');
+  };
+
+  
 
   const [lastRefreshed, setLastRefreshed] = useState<Date>(() => new Date());
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
@@ -78,16 +169,18 @@ export default function App() {
     company: string;
     avatarId: string;
     tenantId: string;
+    bio?: string;
+    plan?: string;
   } | null>(null);
 
   const [isLoadingProfile, setIsLoadingProfile] = useState<boolean>(true);
 
   // Config state
-  const [tenants, setTenants] = useState<Tenant[]>([]);
-  const [activeTenant, setActiveTenant] = useState<Tenant | null>(null);
+  
+  
 
   // Filter state
-  const [selectedTenantId, setSelectedTenantId] = useState('root');
+  
   const [selectedCampaign, setSelectedCampaign] = useState('All');
   const [selectedProduct, setSelectedProduct] = useState('All');
   const [startDate, setStartDate] = useState('2026-01-01');
@@ -218,7 +311,7 @@ export default function App() {
           setActiveTenant(first);
         }
       })
-      .catch(err => console.error("Error fetching tenants:", err));
+      .catch(err => { console.error("Error fetching tenants:", err); showToast("Error fetching tenants", "error"); });
   }, []);
 
   // Load chat messages from Firestore
@@ -316,12 +409,32 @@ export default function App() {
 
       if (docSnap && docSnap.exists()) {
         const data = docSnap.data();
+        let tenantId = data.tenantId || '';
+        let fullName = data.fullName || 'User';
+        let role = data.role || 'Member';
+        let company = data.company || 'Organization';
+        let avatarId = data.avatarId || 'av1';
+        let bio = data.bio || '';
+        let plan = data.plan || (data.bio && data.bio.toLowerCase().includes('plan:') ? data.bio.toLowerCase().split('plan:')[1].trim() : 'monthly');
+
+        if (emailKey === 'executive@sniper.ai') {
+          tenantId = 'apex-logistics';
+          fullName = 'Executive User';
+          role = 'Executive Partner';
+          company = 'Apex Logistics';
+          avatarId = 'av2';
+          bio = 'Executive User Account';
+          plan = 'enterprise';
+        }
+
         const profile = {
-          fullName: data.fullName || 'User',
-          role: data.role || 'Member',
-          company: data.company || 'Organization',
-          avatarId: data.avatarId || 'av1',
-          tenantId: data.tenantId || ''
+          fullName,
+          role,
+          company,
+          avatarId,
+          tenantId,
+          bio,
+          plan
         };
         setUserProfile(profile);
         localStorage.setItem(cacheKey, JSON.stringify({ ...data, ...profile }));
@@ -329,17 +442,52 @@ export default function App() {
           console.log("Setting selectedTenantId from user profile:", profile.tenantId);
           setSelectedTenantId(profile.tenantId);
         }
+
+        // Write back if we forced it for the executive account and it is not in sync
+        if (emailKey === 'executive@sniper.ai' && (!data.tenantId || data.tenantId !== 'apex-logistics')) {
+          try {
+            await setDoc(docRef, {
+              fullName,
+              role,
+              company,
+              avatarId,
+              tenantId,
+              bio: 'Executive User Account',
+              location: 'Riyadh, Saudi Arabia',
+              phone: '+966 50 111 2222',
+              updatedAt: new Date().toISOString()
+            }, { merge: true });
+          } catch (writeErr) {
+            console.error("Failed to update executive tenantId in Firestore:", writeErr);
+          }
+        }
       } else {
         // Fallback to cache if available
         const cachedStr = localStorage.getItem(cacheKey);
         if (cachedStr) {
           const cachedData = JSON.parse(cachedStr);
+          let tenantId = cachedData.tenantId || '';
+          let fullName = cachedData.fullName || 'User';
+          let role = cachedData.role || 'Member';
+          let company = cachedData.company || 'Organization';
+          let avatarId = cachedData.avatarId || 'av1';
+
+          if (emailKey === 'executive@sniper.ai') {
+            tenantId = 'apex-logistics';
+            fullName = 'Executive User';
+            role = 'Executive Partner';
+            company = 'Apex Logistics';
+            avatarId = 'av2';
+          }
+
           const profile = {
-            fullName: cachedData.fullName || 'User',
-            role: cachedData.role || 'Member',
-            company: cachedData.company || 'Organization',
-            avatarId: cachedData.avatarId || 'av1',
-            tenantId: cachedData.tenantId || ''
+            fullName,
+            role,
+            company,
+            avatarId,
+            tenantId,
+            bio: cachedData.bio || '',
+            plan: cachedData.plan || (cachedData.bio && cachedData.bio.toLowerCase().includes('plan:') ? cachedData.bio.toLowerCase().split('plan:')[1].trim() : 'monthly')
           };
           setUserProfile(profile);
           if (profile.tenantId && profile.tenantId !== selectedTenantId) {
@@ -368,7 +516,9 @@ export default function App() {
             role: payload.role,
             company: payload.company,
             avatarId: payload.avatarId,
-            tenantId: payload.tenantId
+            tenantId: payload.tenantId,
+            bio: payload.bio,
+            plan: 'enterprise'
           });
           setSelectedTenantId('root');
 
@@ -379,13 +529,44 @@ export default function App() {
               console.warn("Failed to write admin profile to Firestore (using offline mode):", writeErr);
             }
           }
+        } else if (emailKey === 'executive@sniper.ai') {
+          const payload = {
+            fullName: 'Executive User',
+            phone: '+966 50 111 2222',
+            role: 'Executive Partner',
+            company: 'Apex Logistics',
+            bio: 'Executive User Account',
+            location: 'Riyadh, Saudi Arabia',
+            avatarId: 'av2',
+            updatedAt: new Date().toISOString(),
+            tenantId: 'apex-logistics',
+          };
+          localStorage.setItem(cacheKey, JSON.stringify(payload));
+          setUserProfile({
+            fullName: payload.fullName,
+            role: payload.role,
+            company: payload.company,
+            avatarId: payload.avatarId,
+            tenantId: payload.tenantId,
+            bio: payload.bio,
+            plan: 'enterprise'
+          });
+          setSelectedTenantId('apex-logistics');
+
+          if (!isOffline) {
+            try {
+              await setDoc(docRef, payload);
+            } catch (writeErr) {
+              console.warn("Failed to write executive profile to Firestore (using offline mode):", writeErr);
+            }
+          }
         } else {
           const payload = {
             fullName: 'New Partner Node',
             phone: '',
             role: 'Operations Lead',
             company: 'Workspace Partner',
-            bio: 'Synchronized with active federated dashboard.',
+            bio: 'Synchronized with active federated dashboard. Plan: MONTHLY',
             location: '',
             avatarId: 'av2',
             updatedAt: new Date().toISOString(),
@@ -397,7 +578,9 @@ export default function App() {
             role: payload.role,
             company: payload.company,
             avatarId: payload.avatarId,
-            tenantId: payload.tenantId
+            tenantId: payload.tenantId,
+            bio: payload.bio,
+            plan: 'monthly'
           });
           setSelectedTenantId('');
 
@@ -411,7 +594,7 @@ export default function App() {
         }
       }
     } catch (err) {
-      console.error("Error loading user profile:", err);
+      console.error("Error loading user profile:", err); showToast("Error loading user profile", "error");
     } finally {
       setIsLoadingProfile(false);
     }
@@ -519,7 +702,7 @@ export default function App() {
         }
         setLastRefreshed(new Date());
       })
-      .catch(err => console.error("Error loading metrics:", err));
+      .catch(err => { console.error("Error loading metrics:", err); showToast("Error loading metrics", "error"); });
   };
 
   // Get CRM status
@@ -527,7 +710,7 @@ export default function App() {
     return fetch(`/api/crm/deals/${selectedTenantId}`)
       .then(res => res.json())
       .then((deals) => setCrmDeals(deals))
-      .catch(err => console.error("Error loading CRM deals:", err));
+      .catch(err => { console.error("Error loading CRM deals:", err); showToast("Error loading CRM deals", "error"); });
   };
 
   const fetchSyncHistory = () => {
@@ -539,7 +722,7 @@ export default function App() {
         setSyncHistoryLoading(false);
       })
       .catch(err => {
-        console.error("Error loading CRM sync history:", err);
+        console.error("Error loading CRM sync history:", err); showToast("Error loading CRM sync history", "error");
         setSyncHistoryLoading(false);
       });
   };
@@ -574,7 +757,7 @@ export default function App() {
         'تم تحديث جميع تدفقات التحليلات، مؤشرات الأداء، وصفقات إدارة العملاء إلى أحدث حالة.'
       );
     } catch (err) {
-      console.error("Manual refresh failed:", err);
+      console.error("Manual refresh failed:", err); showToast("Manual refresh failed", "error");
     } finally {
       setIsRefreshing(false);
     }
@@ -614,7 +797,7 @@ export default function App() {
         );
       })
       .catch(err => {
-        console.error("Forecasting failed:", err);
+        console.error("Forecasting failed:", err); showToast("Forecasting failed", "error");
         setForecastLoading(false);
       });
   };
@@ -692,7 +875,9 @@ export default function App() {
         endDate,
         message: text,
         history: chatMessages,
-        language
+        language,
+        userEmail: userEmail || undefined,
+        userProfile: userProfile || undefined
       })
     })
       .then(res => res.json())
@@ -702,15 +887,30 @@ export default function App() {
           role: 'model',
           text: data.text,
           timestamp: new Date().toLocaleTimeString(),
-          tableData: data.tableData
+          tableData: data.tableData,
+          action: data.action
         };
         const updatedWithModel = [...updatedWithUser, modelMsg];
         setChatMessages(updatedWithModel);
         saveChatHistory(updatedWithModel);
         setChatLoading(false);
+
+        // Execute action if provided
+        if (data.action && data.action.type === 'navigate_to') {
+          const view = data.action.payload;
+          if (['dashboard', 'users', 'billing', 'profile', 'inventory'].includes(view)) {
+            setActiveView(view as any);
+            showToast(
+              language === 'ar' 
+                ? `جاري الانتقال التلقائي إلى واجهة: ${view === 'dashboard' ? 'لوحة التحكم الرئيسي' : view === 'users' ? 'إدارة المستخدمين' : view === 'billing' ? 'الفواتير والاشتراكات' : view === 'profile' ? 'الملف الشخصي' : 'مستودع مخزون المنتجات'}` 
+                : `Navigating automatically to ${view} screen...`, 
+              "info"
+            );
+          }
+        }
       })
       .catch(err => {
-        console.error("Chat failed:", err);
+        console.error("Chat failed:", err); showToast("Chat failed", "error");
         setChatLoading(false);
       });
   };
@@ -759,7 +959,7 @@ export default function App() {
         );
       })
       .catch(err => {
-        console.error("Auto-summarization failed:", err);
+        console.error("Auto-summarization failed:", err); showToast("Auto-summarization failed", "error");
         setChatLoading(false);
       });
   };
@@ -798,7 +998,7 @@ export default function App() {
         );
       })
       .catch(err => {
-        console.error("Report generation failed:", err);
+        console.error("Report generation failed:", err); showToast("Report generation failed", "error");
         setReportLoading(false);
       });
   };
@@ -840,7 +1040,7 @@ export default function App() {
         );
       })
       .catch(err => {
-        console.error("CRM Sync failed:", err);
+        console.error("CRM Sync failed:", err); showToast("CRM Sync failed", "error");
         setCrmLoading(false);
         // Still fetch the sync logs to display the failure entry
         fetchSyncHistory();
@@ -943,7 +1143,7 @@ export default function App() {
           setRunTour(true);
         }, 1500);
       } catch (err) {
-        console.error('Failed to link user profile to tenant in Firestore:', err);
+        console.error('Failed to link user profile to tenant in Firestore:', err); showToast("Failed to link user profile", "error");
       }
     }
   };
@@ -971,7 +1171,7 @@ export default function App() {
     try {
       await setDoc(doc(db, 'tenants', activeTenant.id), sanitizeFirestoreData(updatedTenant));
     } catch (e) {
-      console.error("Failed to update tenant products in Firestore:", e);
+      console.error("Failed to update tenant products in Firestore:", e); showToast("Failed to update tenant products", "error");
     }
 
     setTenants(prev => prev.map(t => t.id === activeTenant.id ? updatedTenant : t));
@@ -979,6 +1179,19 @@ export default function App() {
   };
 
   if (!isAuthenticated) {
+    if (showSplash) {
+      return (
+        <MarketingSplash
+          language={language}
+          onLanguageToggle={handleLanguageToggle}
+          onFinish={() => {
+            sessionStorage.setItem('has_seen_splash', 'true');
+            setShowSplash(false);
+          }}
+        />
+      );
+    }
+
     return (
       <AuthPage 
         language={language}
@@ -1142,15 +1355,6 @@ export default function App() {
               <LogOut className="w-3.5 h-3.5" />
               <span>{language === 'ar' ? 'خروج' : 'Logout'}</span>
             </button>
-
-            <div className="hidden sm:flex items-center gap-1.5 bg-slate-900 px-3 py-1.5 rounded-xl border border-slate-800">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              <span className="font-medium text-slate-300">{t.sandboxActive}</span>
-            </div>
-            <div className="hidden lg:flex items-center gap-1.5">
-              <Globe className="w-3.5 h-3.5 text-slate-600" />
-              <span>{t.utcConnected}</span>
-            </div>
           </div>
         </div>
       </header>
@@ -1319,115 +1523,212 @@ export default function App() {
               crmDealsCount={crmDeals.length}
             />
 
-            {/* Row 2, 3, 4: Sales Data Presentation Area */}
+            {/* Workspace Customizer Controls */}
             {activeTenant && (
-              dbStatus && dbStatus.provider === 'PostgreSQL' && !dbStatus.salesTableExists ? (
-                <div className="w-full mb-6 bg-amber-500/10 border border-amber-500/20 rounded-3xl p-6 text-start backdrop-blur-md">
-                  <div className="flex items-start gap-4">
-                    <div className="p-3 bg-amber-500/20 text-amber-400 rounded-2xl">
-                      <Database className="w-6 h-6 animate-pulse" />
+              <div className="bg-slate-900/20 backdrop-blur-md border border-slate-900/80 rounded-2xl p-4 mb-6 transition-all">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className={`flex items-center gap-2.5 ${language === 'ar' ? 'flex-row-reverse text-right' : 'flex-row text-left'}`}>
+                    <div className="p-2 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
+                      <SlidersHorizontal className="w-4 h-4" />
                     </div>
-                    <div className="flex-1">
-                      <h3 className="text-base font-bold text-white font-display">
-                        {language === 'ar' ? 'تنبيه: الرجاء استكمال الجدول المطلوب' : 'Alert: Please complete the required table'}
+                    <div>
+                      <h3 className="text-xs font-bold text-slate-200 font-display">
+                        {language === 'ar' ? 'مخصِص مساحة العمل' : 'Workspace Customizer'}
                       </h3>
-                      <p className="text-xs text-amber-200/80 font-light mt-1 max-w-2xl leading-relaxed">
-                        {language === 'ar' ? (
-                          <>
-                            متصل بقاعدة البيانات بنجاح، ولكن <strong>جدول المبيعات ({dbStatus.salesTableName || 'sales_records'})</strong> غير موجود حالياً. 
-                            الرجاء استكمال هيكل البيانات المذكور أدناه أو استيراد الجدول في قاعدة بياناتك لعرض مؤشرات المبيعات والرسوم البيانية بشكل طبيعي.
-                          </>
-                        ) : (
-                          <>
-                            Successfully connected to the database, but the <strong>sales table ({dbStatus.salesTableName || 'sales_records'})</strong> is currently missing. 
-                            Please complete the required schema or import the table in your database to visualize sales KPIs and charts.
-                          </>
-                        )}
+                      <p className="text-[10px] text-slate-400">
+                        {language === 'ar' ? 'أعد ترتيب أو إخفاء عناصر لوحة التحكم لتناسب احتياجك' : 'Reorder or toggle dashboard components to fit your flow'}
                       </p>
-                      
-                      <div className="mt-4 bg-slate-950/80 rounded-xl p-3 border border-slate-900 font-mono text-[11px] text-slate-300 overflow-x-auto">
-                        <span className="text-[10px] text-slate-500 uppercase tracking-wider block mb-1 font-bold">SQL SCHEMA TEMPLATE</span>
-                        {`CREATE TABLE ${dbStatus.salesTableName || 'sales_records'} (
-  id SERIAL PRIMARY KEY,
-  tenant_id VARCHAR(100),
-  date DATE,
-  product VARCHAR(255),
-  campaign VARCHAR(255),
-  revenue NUMERIC(15, 2),
-  cost NUMERIC(15, 2),
-  units INTEGER,
-  is_anomaly BOOLEAN,
-  anomaly_reason TEXT
-);`}
-                      </div>
                     </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 self-end sm:self-center">
+                    <button
+                      onClick={handleResetLayout}
+                      className="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-[10px] font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors cursor-pointer"
+                    >
+                      {language === 'ar' ? 'إعادة التخطيط الافتراضي' : 'Reset Layout'}
+                    </button>
+                    <button
+                      onClick={() => setIsCustomizerOpen(!isCustomizerOpen)}
+                      className={`px-3 py-1.5 rounded-lg text-[10px] font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
+                        isCustomizerOpen 
+                          ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-950/25' 
+                          : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800'
+                      }`}
+                    >
+                      <Settings className={`w-3 h-3 ${isCustomizerOpen ? 'animate-spin' : ''}`} />
+                      <span>{isCustomizerOpen ? (language === 'ar' ? 'حفظ وإغلاق التخصيص' : 'Save & Close') : (language === 'ar' ? 'تخصيص المظهر والتخطيط' : 'Customize Layout')}</span>
+                    </button>
                   </div>
                 </div>
-              ) : (
-                <>
-                  <KPICards
-                    summary={summary}
-                    activeTenant={activeTenant}
-                    language={language}
-                  />
 
-                  <div className="w-full mb-6">
-                    <SalesChart
-                      historicalData={chartData}
-                      forecastData={forecastData}
-                      activeTenant={activeTenant}
-                      forecastLoading={forecastLoading}
-                      onTriggerForecast={handleTriggerForecast}
-                      forecastAnalysis={forecastAnalysis}
-                      language={language}
-                    />
-                  </div>
+                {/* Customizer Panel */}
+                <AnimatePresence>
+                  {isCustomizerOpen && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      className="overflow-hidden mt-4 border-t border-slate-900 pt-4"
+                    >
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {dashboardWidgets.map((widget, idx) => {
+                          const isFirst = idx === 0;
+                          const isLast = idx === dashboardWidgets.length - 1;
+                          return (
+                            <div 
+                              key={widget.id} 
+                              className={`flex items-center justify-between p-3 bg-slate-950/60 hover:bg-slate-950/90 border rounded-xl transition-all ${
+                                widget.visible ? 'border-slate-800/80' : 'border-slate-900/40 opacity-50'
+                              }`}
+                            >
+                              <div className={`flex items-center gap-2.5 ${language === 'ar' ? 'flex-row-reverse' : 'flex-row'}`}>
+                                <div className="text-slate-500 hover:text-slate-400 cursor-grab active:cursor-grabbing">
+                                  <GripVertical className="w-3.5 h-3.5" />
+                                </div>
+                                <div className={language === 'ar' ? 'text-right' : 'text-left'}>
+                                  <p className="text-[11px] font-semibold text-slate-200">
+                                    {language === 'ar' ? widget.nameAr : widget.nameEn}
+                                  </p>
+                                  <span className="text-[9px] text-slate-500 font-mono">
+                                    {widget.id}
+                                  </span>
+                                </div>
+                              </div>
 
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-                    <div className="lg:col-span-1">
-                      <ProductsPieChart 
-                        data={summary?.productDistribution || []} 
-                        language={language} 
-                      />
-                    </div>
-                    <div className="lg:col-span-2">
-                      <StrategicReport
-                        reportText={reportText}
-                        loading={reportLoading}
-                        onGenerateReport={handleGenerateReport}
-                        onExportCSV={handleExportCSV}
-                        activeTenantName={activeTenant.name}
-                        language={language}
-                        summary={summary}
-                      />
-                    </div>
-                  </div>
-                </>
-              )
+                              <div className={`flex items-center gap-1.5 ${language === 'ar' ? 'flex-row-reverse' : 'flex-row'}`}>
+                                {/* Reordering Arrows */}
+                                <div className="flex items-center bg-slate-900 rounded-lg p-0.5 border border-slate-800">
+                                  <button
+                                    onClick={() => handleMoveWidget(idx, 'up')}
+                                    disabled={isFirst}
+                                    className={`p-1 rounded text-slate-500 hover:text-indigo-400 disabled:opacity-20 disabled:hover:text-slate-500 transition-colors cursor-pointer`}
+                                    title="Move Up"
+                                  >
+                                    <ArrowUp className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleMoveWidget(idx, 'down')}
+                                    disabled={isLast}
+                                    className={`p-1 rounded text-slate-500 hover:text-indigo-400 disabled:opacity-20 disabled:hover:text-slate-500 transition-colors cursor-pointer`}
+                                    title="Move Down"
+                                  >
+                                    <ArrowDown className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+
+                                {/* Visibility Toggle Button */}
+                                <button
+                                  onClick={() => handleToggleWidget(widget.id)}
+                                  className={`p-1.5 rounded-lg border transition-all cursor-pointer ${
+                                    widget.visible 
+                                      ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/20' 
+                                      : 'bg-rose-500/5 border-rose-500/10 text-rose-500 hover:bg-rose-500/10'
+                                  }`}
+                                  title={widget.visible ? 'Hide widget' : 'Show widget'}
+                                >
+                                  {widget.visible ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
             )}
 
-            {/* Row 5: Secondary Business Actions & Audits */}
+            {/* Dashboard Presentation Area (Personalized / Reorderable 6-column Grid) */}
             {activeTenant && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                  <CRMTracker
-                    deals={crmDeals}
-                    loading={crmLoading}
-                    onSyncCRM={handleSyncCRM}
-                    activeTenant={activeTenant}
-                    language={language}
-                    syncHistory={syncHistory}
-                    syncHistoryLoading={syncHistoryLoading}
-                    dbStatus={dbStatus}
-                  />
-                </div>
-                <div>
-                  <AnomaliesList
-                    anomalies={summary.anomalies}
-                    activeTenant={activeTenant}
-                    language={language}
-                  />
-                </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-6">
+                {dashboardWidgets.map((widget) => {
+                  if (!widget.visible) return null;
+
+                  switch (widget.id) {
+                    case 'kpi_cards':
+                      return (
+                        <div key={widget.id} className="col-span-1 md:col-span-2 lg:col-span-6 transition-all duration-300">
+                          <KPICards
+                            summary={summary}
+                            activeTenant={activeTenant}
+                            language={language}
+                          />
+                        </div>
+                      );
+
+                    case 'sales_chart':
+                      return (
+                        <div key={widget.id} className="col-span-1 md:col-span-2 lg:col-span-6 transition-all duration-300">
+                          <SalesChart
+                            historicalData={chartData}
+                            forecastData={forecastData}
+                            activeTenant={activeTenant}
+                            forecastLoading={forecastLoading}
+                            onTriggerForecast={handleTriggerForecast}
+                            forecastAnalysis={forecastAnalysis}
+                            language={language}
+                          />
+                        </div>
+                      );
+
+                    case 'pie_chart':
+                      return (
+                        <div key={widget.id} className="col-span-1 md:col-span-1 lg:col-span-2 transition-all duration-300">
+                          <ProductsPieChart 
+                            data={summary?.productDistribution || []} 
+                            language={language} 
+                          />
+                        </div>
+                      );
+
+                    case 'strategic_report':
+                      return (
+                        <div key={widget.id} className="col-span-1 md:col-span-2 lg:col-span-4 transition-all duration-300">
+                          <StrategicReport
+                            reportText={reportText}
+                            loading={reportLoading}
+                            onGenerateReport={handleGenerateReport}
+                            onExportCSV={handleExportCSV}
+                            activeTenantName={activeTenant.name}
+                            language={language}
+                            summary={summary}
+                          />
+                        </div>
+                      );
+
+                    case 'crm_tracker':
+                      return (
+                        <div key={widget.id} className="col-span-1 md:col-span-1 lg:col-span-3 transition-all duration-300">
+                          <CRMTracker
+                            deals={crmDeals}
+                            loading={crmLoading}
+                            onSyncCRM={handleSyncCRM}
+                            activeTenant={activeTenant}
+                            language={language}
+                            syncHistory={syncHistory}
+                            syncHistoryLoading={syncHistoryLoading}
+                            dbStatus={dbStatus}
+                          />
+                        </div>
+                      );
+
+                    case 'anomalies':
+                      return (
+                        <div key={widget.id} className="col-span-1 md:col-span-1 lg:col-span-3 transition-all duration-300">
+                          <AnomaliesList
+                            anomalies={summary.anomalies}
+                            activeTenant={activeTenant}
+                            language={language}
+                          />
+                        </div>
+                      );
+
+                    default:
+                      return null;
+                  }
+                })}
               </div>
             )}
           </>
@@ -1440,9 +1741,33 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <p>{t.copyright}</p>
           <div className="flex gap-4 justify-center sm:justify-end">
-            <a href="#" className="hover:text-slate-300 transition-colors">{t.privacy}</a>
-            <a href="#" className="hover:text-slate-300 transition-colors">{t.apiSpecs}</a>
-            <a href="#" className="hover:text-slate-300 transition-colors">{t.terms}</a>
+            <button
+              onClick={() => {
+                setLegalModalTab('privacy');
+                setIsLegalModalOpen(true);
+              }}
+              className="hover:text-slate-300 transition-colors cursor-pointer bg-transparent border-none text-slate-500 text-xs"
+            >
+              {t.privacy}
+            </button>
+            <button
+              onClick={() => {
+                setLegalModalTab('apiSpecs');
+                setIsLegalModalOpen(true);
+              }}
+              className="hover:text-slate-300 transition-colors cursor-pointer bg-transparent border-none text-slate-500 text-xs"
+            >
+              {t.apiSpecs}
+            </button>
+            <button
+              onClick={() => {
+                setLegalModalTab('terms');
+                setIsLegalModalOpen(true);
+              }}
+              className="hover:text-slate-300 transition-colors cursor-pointer bg-transparent border-none text-slate-500 text-xs"
+            >
+              {t.terms}
+            </button>
           </div>
         </div>
       </footer>
@@ -1452,6 +1777,9 @@ export default function App() {
         onClose={() => setIsOnboardModalOpen(false)}
         language={language}
         onOnboardSuccess={handleOnboardSuccess}
+        userEmail={userEmail}
+        userProfile={userProfile}
+        tenants={tenants}
       />
 
       <TenantSettingsModal
@@ -1550,6 +1878,13 @@ export default function App() {
           setRunTour(false);
           localStorage.setItem('sniper_onboarding_completed', 'true');
         }}
+      />
+
+      <LegalAndApiModal
+        isOpen={isLegalModalOpen}
+        onClose={() => setIsLegalModalOpen(false)}
+        initialTab={legalModalTab}
+        language={language}
       />
     </div>
   );

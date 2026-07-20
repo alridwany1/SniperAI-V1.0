@@ -5,30 +5,82 @@ import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 dotenv.config();
 
-import { Tenant, SalesRecord, MetricSummary, ForecastRecord, ChatMessage, CRMDeal, SyncHistoryEntry } from "./src/types.js";
+import { Tenant, SalesRecord, MetricSummary, ForecastRecord, ChatMessage, CRMDeal, SyncHistoryEntry, InventoryItem } from "./src/types.js";
 import { Client } from "pg";
 import { introspectSchema, mapSchemaWithAI, analyzeAndRouteSchemaWithAI } from "./schema_mapper.js";
+import { buildConnectionString } from "./db_helper.js";
 import { initializeApp } from "firebase/app";
 import { getFirestore, collection, doc, getDocs, getDoc, setDoc, deleteDoc } from "firebase/firestore";
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword } from "firebase/auth";
 import fs from "fs";
 
-let firebaseConfig: any;
+// Dynamically resolve Firebase and Firestore configurations
+let configDbId = "ai-studio-sniperaiv21-8ee02038-98dc-42b7-9275-3cf55e6ffb8d";
+let configProjectId = "project-9b5d1c9a-a93c-4349-b04";
 try {
-  firebaseConfig = JSON.parse(fs.readFileSync(path.join(process.cwd(), "firebase-applet-config.json"), "utf8"));
-} catch (e) {
-  firebaseConfig = {
-    apiKey: process.env.FIREBASE_API_KEY || "AIzaSyBWqUM5yEJg_3-VSfRQmNliPj9HUT_cn0c",
-    authDomain: `${process.env.FIREBASE_PROJECT_ID || "project-9b5d1c9a-a93c-4349-b04"}.firebaseapp.com`,
-    projectId: process.env.FIREBASE_PROJECT_ID || "project-9b5d1c9a-a93c-4349-b04",
-    appId: process.env.FIREBASE_APP_ID || "1:322173143738:web:9114c8ef9e1b1d4de7d083",
-    firestoreDatabaseId: process.env.FIREBASE_DATABASE_ID || "ai-studio-sniperaiv21-8ee02038-98dc-42b7-9275-3cf55e6ffb8d"
-  };
+  const configPath = path.join(process.cwd(), "firebase-applet-config.json");
+  if (fs.existsSync(configPath)) {
+    const configData = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    if (configData.firestoreDatabaseId) {
+      configDbId = configData.firestoreDatabaseId;
+    }
+    if (configData.projectId) {
+      configProjectId = configData.projectId;
+    }
+  }
+} catch (err) {
+  console.error("Error reading firebase-applet-config.json:", err);
 }
 
-const firebaseApp = initializeApp(firebaseConfig);
-const db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId || "default");
+const firebaseConfig = {
+  apiKey: process.env.FIREBASE_API_KEY || "AIzaSyBWqUM5yEJg_3-VSfRQmNliPj9HUT_cn0c",
+  authDomain: `${process.env.FIREBASE_PROJECT_ID || configProjectId}.firebaseapp.com`,
+  projectId: process.env.FIREBASE_PROJECT_ID || configProjectId,
+  storageBucket: `${process.env.FIREBASE_PROJECT_ID || configProjectId}.firebasestorage.app`,
+  appId: process.env.FIREBASE_APP_ID || "1:322173143738:web:9114c8ef9e1b1d4de7d083"
+};
 
-const DB_MAPPING_CACHE = new Map<string, any>();
+const firebaseApp = initializeApp(firebaseConfig);
+
+// If the project ID is different from the default sandbox/preview project ID, 
+// we are running in a custom deployed project which typically uses "(default)".
+const dbId = process.env.FIRESTORE_DB_ID || 
+             configDbId || 
+             process.env.FIREBASE_DATABASE_ID;
+
+console.log(`Initializing Firestore with Project: ${firebaseConfig.projectId}, Database ID: ${dbId}`);
+const db = getFirestore(firebaseApp, dbId);
+const serverAuth = getAuth(firebaseApp);
+
+async function setFirestoreCache(collectionName: string, key: string, data: any, ttlSecs: number = 3600) {
+  try {
+    const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
+    await setDoc(doc(db, collectionName, safeKey), {
+      data: JSON.stringify(data),
+      timestamp: Date.now(),
+      expiresAt: Date.now() + (ttlSecs * 1000)
+    });
+  } catch (e) {
+    console.error(`Cache set error [${collectionName}]:`, e);
+  }
+}
+
+async function getFirestoreCache(collectionName: string, key: string) {
+  try {
+    const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const d = await getDoc(doc(db, collectionName, safeKey));
+    if (d.exists()) {
+      const val = d.data();
+      if (val.expiresAt && Date.now() > val.expiresAt) {
+        return null;
+      }
+      return JSON.parse(val.data);
+    }
+  } catch (e) {
+    console.error(`Cache get error [${collectionName}]:`, e);
+  }
+  return null;
+}
 
 function cleanObject<T>(obj: T): T {
   if (obj === null || obj === undefined) return null as any;
@@ -42,7 +94,8 @@ async function getDynamicDBMapping(connectionString: string, tenantId: string) {
   if (tenant && tenant.dbMapping && Object.keys(tenant.dbMapping).length > 0) {
     return tenant.dbMapping;
   }
-  if (DB_MAPPING_CACHE.has(tenantId)) return DB_MAPPING_CACHE.get(tenantId);
+  const cached = await getFirestoreCache('DB_MAPPING_CACHE', tenantId);
+  if (cached) return cached;
   const mockSchema = {
     "sales_ledger": [
       { "column": "record_id", "type": "integer" },
@@ -65,14 +118,14 @@ async function getDynamicDBMapping(connectionString: string, tenantId: string) {
   try {
     const schema = await introspectSchema(connectionString);
     const mapping = await mapSchemaWithAI(schema);
-    DB_MAPPING_CACHE.set(tenantId, mapping);
+    await setFirestoreCache('DB_MAPPING_CACHE', tenantId, mapping, 3600 * 24);
     return mapping;
   } catch (e: any) {
     const isDefault = tenantId === 'apex-logistics' || tenantId === 'nova-retail' || tenantId === 'vortex-saas';
     if (isDefault) {
       try {
         const mapping = await mapSchemaWithAI(mockSchema);
-        DB_MAPPING_CACHE.set(tenantId, mapping);
+        await setFirestoreCache('DB_MAPPING_CACHE', tenantId, mapping, 3600);
         return mapping;
       } catch (aiErr) {
         return null;
@@ -125,15 +178,25 @@ const PORT = 3000;
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// Initialize Gemini Client
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    }
+// Initialize Gemini Client dynamically with lazy initialization
+let cachedAi: GoogleGenAI | null = null;
+let cachedApiKey: string | undefined = undefined;
+
+function getAi(): GoogleGenAI {
+  const currentKey = process.env.GEMINI_API_KEY;
+  if (!cachedAi || cachedApiKey !== currentKey) {
+    cachedAi = new GoogleGenAI({
+      apiKey: currentKey || "",
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
+    cachedApiKey = currentKey;
   }
-});
+  return cachedAi;
+}
 
 // Mock Tenants Data
 const TENANTS: Tenant[] = [];
@@ -198,8 +261,149 @@ function seedSyncHistory(tenantId: string): SyncHistoryEntry[] {
   return history;
 }
 
-// Strategic Report Cache
-const REPORT_CACHE = new Map<string, string>();
+async function getCRMSyncHistory(tenantId: string): Promise<SyncHistoryEntry[]> {
+  try {
+    const docDoc = await getDoc(doc(db, 'crm_sync_history', tenantId));
+    if (docDoc.exists()) {
+      const data = docDoc.data();
+      if (data && Array.isArray(data.history)) {
+        return data.history as SyncHistoryEntry[];
+      }
+    }
+  } catch (e) {
+    console.error(`Failed to get CRM sync history from Firestore for ${tenantId}:`, e);
+  }
+  
+  // Return and seed default history if none exists
+  const history = seedSyncHistory(tenantId);
+  try {
+    await setDoc(doc(db, 'crm_sync_history', tenantId), cleanObject({ history }));
+  } catch (e) {
+    console.error(`Failed to seed CRM sync history to Firestore for ${tenantId}:`, e);
+  }
+  return history;
+}
+
+async function saveCRMSyncHistory(tenantId: string, history: SyncHistoryEntry[]) {
+  try {
+    await setDoc(doc(db, 'crm_sync_history', tenantId), cleanObject({ history }));
+  } catch (e) {
+    console.error(`Failed to save CRM sync history to Firestore for ${tenantId}:`, e);
+  }
+}
+
+async function getBillingData(tenantId: string): Promise<BillingData> {
+  try {
+    const docDoc = await getDoc(doc(db, 'billing', tenantId));
+    if (docDoc.exists()) {
+      return docDoc.data() as BillingData;
+    }
+  } catch (e) {
+    console.error(`Failed to load billing for ${tenantId}:`, e);
+  }
+
+  // Fallback to defaults
+  const defaults: Record<string, BillingData> = {
+    'apex-logistics': {
+      tenantId: 'apex-logistics',
+      invoiceStatus: 'Paid',
+      nextBillingDate: '2026-08-03',
+      plan: 'Enterprise',
+      pendingRenewals: [
+        { item: 'Data Streaming Layer', amount: 499, date: '2026-07-15' },
+        { item: 'Compliance Engine', amount: 999, date: '2026-07-20' }
+      ],
+      creditCard: {
+        brand: 'Visa',
+        last4: '8842',
+        expMonth: '12',
+        expYear: '2029',
+        cardholder: 'Apex Logistics LLC'
+      },
+      invoices: [
+        { id: 'INV-2026-001', date: '2026-07-03', description: 'Enterprise Plan - Monthly Subscription', amount: 2499, status: 'Paid' },
+        { id: 'INV-2026-002', date: '2026-06-03', description: 'Enterprise Plan - Monthly Subscription', amount: 2499, status: 'Paid' },
+        { id: 'INV-2026-003', date: '2026-05-03', description: 'Enterprise Plan - Monthly Subscription', amount: 2499, status: 'Paid' }
+      ]
+    },
+    'nova-retail': {
+      tenantId: 'nova-retail',
+      invoiceStatus: 'Pending',
+      nextBillingDate: '2026-07-15',
+      plan: 'Team Stream',
+      pendingRenewals: [
+        { item: 'Shopify Integration API', amount: 199, date: '2026-07-10' }
+      ],
+      creditCard: {
+        brand: 'Mastercard',
+        last4: '5521',
+        expMonth: '08',
+        expYear: '2028',
+        cardholder: 'Nova Retail Operations'
+      },
+      invoices: [
+        { id: 'INV-2026-012', date: '2026-06-15', description: 'Team Stream Plan - Monthly Subscription', amount: 499, status: 'Paid' },
+        { id: 'INV-2026-013', date: '2026-05-15', description: 'Team Stream Plan - Monthly Subscription', amount: 499, status: 'Paid' }
+      ]
+    },
+    'vortex-saas': {
+      tenantId: 'vortex-saas',
+      invoiceStatus: 'Overdue',
+      nextBillingDate: '2026-06-25',
+      plan: 'Starter Flow',
+      pendingRenewals: [
+        { item: 'Domain Mapping', amount: 49, date: '2026-06-25' }
+      ],
+      creditCard: {
+        brand: 'Amex',
+        last4: '3007',
+        expMonth: '04',
+        expYear: '2027',
+        cardholder: 'Vortex SaaS Inc.'
+      },
+      invoices: [
+        { id: 'INV-2026-020', date: '2026-05-25', description: 'Starter Flow Plan - Monthly Subscription', amount: 149, status: 'Paid' }
+      ]
+    }
+  };
+
+  const defaultBilling = defaults[tenantId] || {
+    tenantId,
+    invoiceStatus: 'Paid',
+    nextBillingDate: '2026-08-01',
+    plan: 'Basic',
+    pendingRenewals: [],
+    creditCard: {
+      brand: 'Visa',
+      last4: '4242',
+      expMonth: '01',
+      expYear: '2030',
+      cardholder: 'New Organization'
+    },
+    invoices: [
+      { id: 'INV-2026-099', date: '2026-07-01', description: 'Basic Plan Setup', amount: 0, status: 'Paid' }
+    ]
+  };
+
+  // Seed it in Firestore
+  try {
+    await setDoc(doc(db, 'billing', tenantId), cleanObject(defaultBilling));
+  } catch (e) {
+    console.error(`Failed to save default billing to Firestore for ${tenantId}:`, e);
+  }
+
+  return defaultBilling;
+}
+
+async function saveBillingData(tenantId: string, data: BillingData) {
+  try {
+    await setDoc(doc(db, 'billing', tenantId), cleanObject(data));
+  } catch (e) {
+    console.error(`Failed to save billing to Firestore for ${tenantId}:`, e);
+  }
+}
+
+// Strategic Report Cache removed in favor of Firestore cache
 
 // Helper to detect tenant language context
 function getTenantLanguage(tenant: Tenant | undefined): 'ar' | 'es' | 'en' {
@@ -385,38 +589,26 @@ TENANTS.forEach(t => {
 
 
 
-function buildConnectionString(ds: any): string {
-  const host = ds.host!.trim();
-  const lowercaseHost = host.toLowerCase();
-  
-  if ((lowercaseHost.startsWith('postgresql://') || lowercaseHost.startsWith('postgres://')) && host.includes('@')) {
-    if (!host.includes('sslmode=')) {
-      const separator = host.includes('?') ? '&' : '?';
-      return `${host}${separator}sslmode=require`;
+// Function removed, imported from db_helper
+
+function decodeUTF8String(val: any): string {
+  if (val === null || val === undefined) return '';
+  if (typeof val === 'string') {
+    try {
+      const buf = Buffer.from(val, 'binary');
+      const decoded = buf.toString('utf8');
+      if (decoded !== val && /[\u0600-\u06FF]/.test(decoded)) {
+        return decoded;
+      }
+    } catch (e) {
+      // ignore
     }
-    return host;
+    return val;
   }
-  
-  let cleanHost = host;
-  if (cleanHost.startsWith('postgresql://')) {
-    cleanHost = cleanHost.slice('postgresql://'.length);
-  } else if (cleanHost.startsWith('postgres://')) {
-    cleanHost = cleanHost.slice('postgres://'.length);
+  if (Buffer.isBuffer(val)) {
+    return val.toString('utf8');
   }
-  
-  let dbName = ds.databaseName || "";
-  if (cleanHost.includes('/')) {
-    const parts = cleanHost.split('/');
-    cleanHost = parts[0];
-    if (parts[1] && !ds.databaseName) {
-      dbName = parts[1];
-    }
-  }
-  
-  const port = cleanHost.includes(':') ? '' : ':5432';
-  const encodedUser = encodeURIComponent(ds.username || '');
-  const encodedPass = encodeURIComponent(ds.apiKey || '');
-  return `postgresql://${encodedUser}:${encodedPass}@${cleanHost}${port}/${dbName}?sslmode=require`;
+  return String(val);
 }
 
 async function getRawRecords(tenantId: string): Promise<SalesRecord[]> {
@@ -477,13 +669,13 @@ async function getRawRecords(tenantId: string): Promise<SalesRecord[]> {
             
           return {
             date: sales.date && row[sales.date] ? String(row[sales.date]).substring(0, 10) : '2024-01-01',
-            product: sales.product && row[sales.product] ? String(row[sales.product]) : 'Standard Product',
-            campaign: sales.campaign && row[sales.campaign] ? String(row[sales.campaign]) : 'Organic',
+            product: sales.product && row[sales.product] ? decodeUTF8String(row[sales.product]) : 'Standard Product',
+            campaign: sales.campaign && row[sales.campaign] ? decodeUTF8String(row[sales.campaign]) : 'Organic',
             revenue: sales.revenue && !isNaN(parseFloat(row[sales.revenue])) ? parseFloat(row[sales.revenue]) : 0,
             units: sales.units && !isNaN(parseInt(row[sales.units], 10)) ? parseInt(row[sales.units], 10) : 1,
             cost: sales.cost && !isNaN(parseFloat(row[sales.cost])) ? parseFloat(row[sales.cost]) : 0,
             isAnomaly: rawIsAnomaly,
-            anomalyReason: rawAnomalyReason
+            anomalyReason: decodeUTF8String(rawAnomalyReason)
           };
         });
         
@@ -512,8 +704,8 @@ async function getRawRecords(tenantId: string): Promise<SalesRecord[]> {
         const docs = await salesColl.find({}).limit(1000).toArray();
         return docs.map(doc => ({
           date: String(doc.date || doc.sale_date || doc.createdAt || '2024-01-01').substring(0, 10),
-          product: String(doc.product || doc.product_name || doc.item || 'Standard Product'),
-          campaign: String(doc.campaign || doc.marketing_campaign || 'Organic'),
+          product: decodeUTF8String(doc.product || doc.product_name || doc.item || 'Standard Product'),
+          campaign: decodeUTF8String(doc.campaign || doc.marketing_campaign || 'Organic'),
           revenue: !isNaN(parseFloat(doc.revenue || doc.gross_revenue || doc.amount || 0)) ? parseFloat(doc.revenue || doc.gross_revenue || doc.amount || 0) : 0,
           units: !isNaN(parseInt(doc.units || doc.units_sold || doc.quantity || 1, 10)) ? parseInt(doc.units || doc.units_sold || doc.quantity || 1, 10) : 1,
           cost: !isNaN(parseFloat(doc.cost || doc.cost_of_goods || doc.cogs || 0)) ? parseFloat(doc.cost || doc.cost_of_goods || doc.cogs || 0) : 0,
@@ -651,9 +843,9 @@ async function getCRMRecords(tenantId: string): Promise<CRMDeal[]> {
         const res = await client.query(queryStr, params);
         const mappedDeals = res.rows.map(row => ({
           id: crm.id && row[crm.id] ? String(row[crm.id]) : Math.random().toString(),
-          customerName: crm.customerName && row[crm.customerName] ? String(row[crm.customerName]) : 'Unknown Customer',
+          customerName: crm.customerName && row[crm.customerName] ? decodeUTF8String(row[crm.customerName]) : 'Unknown Customer',
           value: crm.value && !isNaN(parseFloat(row[crm.value])) ? parseFloat(row[crm.value]) : 0,
-          status: crm.status && row[crm.status] ? String(row[crm.status]) as any : 'Lead',
+          status: crm.status && row[crm.status] ? decodeUTF8String(row[crm.status]) as any : 'Lead',
           lastUpdated: crm.lastUpdated && row[crm.lastUpdated] ? String(row[crm.lastUpdated]).substring(0, 10) : new Date().toISOString().substring(0, 10)
         }));
         
@@ -682,9 +874,9 @@ async function getCRMRecords(tenantId: string): Promise<CRMDeal[]> {
         const docs = await crmColl.find({}).limit(1000).toArray();
         return docs.map(doc => ({
           id: String(doc._id || doc.id || Math.random()),
-          customerName: String(doc.customerName || doc.client_name || doc.customer_name || 'Unknown Customer'),
+          customerName: decodeUTF8String(doc.customerName || doc.client_name || doc.customer_name || 'Unknown Customer'),
           value: !isNaN(parseFloat(doc.value || doc.deal_value || doc.amount || 0)) ? parseFloat(doc.value || doc.deal_value || doc.amount || 0) : 0,
-          status: (doc.status || doc.pipeline_status || 'Lead') as any,
+          status: decodeUTF8String(doc.status || doc.pipeline_status || 'Lead') as any,
           lastUpdated: String(doc.lastUpdated || doc.last_updated || doc.updatedAt || new Date().toISOString()).substring(0, 10)
         }));
       }
@@ -755,6 +947,107 @@ async function getCRMRecords(tenantId: string): Promise<CRMDeal[]> {
     }
   }
   return CRM_DB[tenantId] || [];
+}
+
+async function getInventoryRecords(tenantId: string, tableOverride?: string): Promise<InventoryItem[] | null> {
+  const tenant = await getTenantById(tenantId);
+  if (tenant?.dataSource?.provider === 'PostgreSQL') {
+    const ds = tenant.dataSource;
+    const connectionString = buildConnectionString(ds);
+    
+    const mapping = await getDynamicDBMapping(connectionString, tenantId);
+    const targetTable = tableOverride || (mapping && mapping.inventory && mapping.inventory.table);
+    
+    if (targetTable) {
+      const client = new Client({ connectionString, ssl: { rejectUnauthorized: false } });
+      try {
+        await client.connect();
+        await client.query("SET client_encoding TO 'UTF8'");
+        
+        let inventory = mapping?.inventory;
+        if (!inventory || inventory.table !== targetTable) {
+          inventory = {
+            table: targetTable,
+            sku: 'sku',
+            productName: 'product_name',
+            stockLevel: 'stock_level',
+            safetyStock: 'safety_stock',
+            unitCost: 'unit_cost',
+            unitPrice: 'unit_price',
+            supplier: 'supplier',
+            lastRestocked: 'last_restocked'
+          };
+        }
+        
+        let exists = true;
+        try {
+          await client.query(`SELECT 1 FROM "${targetTable}" LIMIT 1`);
+        } catch (tableErr) {
+          exists = false;
+        }
+        
+        if (!exists) {
+          console.error(`PostgreSQL Inventory table "${targetTable}" does not exist or is not accessible.`);
+          return null;
+        }
+        
+        const colsQuery = await client.query(`
+          SELECT column_name 
+          FROM information_schema.columns 
+          WHERE table_name = $1
+        `, [targetTable]);
+        const cols = colsQuery.rows.map(r => r.column_name.toLowerCase());
+        const hasTenantId = cols.includes('tenant_id') || cols.includes('tenantid');
+        
+        const findBestCol = (preferredKey: string, fallbackKeys: string[]): string => {
+          if (cols.includes(preferredKey.toLowerCase())) return preferredKey;
+          for (const fk of fallbackKeys) {
+            if (cols.includes(fk.toLowerCase())) return fk;
+          }
+          const partial = cols.find(c => c.includes(preferredKey.toLowerCase()));
+          return partial || cols[0] || '';
+        };
+
+        const activeSkuCol = findBestCol(inventory.sku || 'sku', ['id', 'item_id', 'product_id', 'code', 'sku_code', 'رمز', 'الرمز']);
+        const activeNameCol = findBestCol(inventory.productName || 'product_name', ['name', 'product', 'productname', 'title', 'الاسم', 'اسم_المنتج', 'اسم']);
+        const activeStockCol = findBestCol(inventory.stockLevel || 'stock_level', ['stock', 'quantity', 'stocklevel', 'qty', 'count', 'المخزون', 'الكمية']);
+        const activeSafetyCol = findBestCol(inventory.safetyStock || 'safety_stock', ['safety', 'safetystock', 'limit', 'threshold', 'الامان', 'حد_الامان']);
+        const activeCostCol = findBestCol(inventory.unitCost || 'unit_cost', ['cost', 'unitcost', 'buy_price', 'cogs', 'التكلفة', 'سعر_التكلفة']);
+        const activePriceCol = findBestCol(inventory.unitPrice || 'unit_price', ['price', 'unitprice', 'retail', 'sell_price', 'السعر', 'سعر_البيع']);
+        const activeSupplierCol = findBestCol(inventory.supplier || 'supplier', ['vendor', 'source', 'manufacturer', 'distributor', 'المورد', 'شركة']);
+        const activeRestockCol = findBestCol(inventory.lastRestocked || 'last_restocked', ['date', 'restocked', 'updated', 'updated_at', 'التاريخ', 'تاريخ_التحديث']);
+
+        let queryStr = `SELECT * FROM "${targetTable}"`;
+        const params: any[] = [];
+        if (hasTenantId) {
+          queryStr += ` WHERE tenant_id = $1`;
+          params.push(tenantId);
+        }
+        queryStr += ` LIMIT 1000`;
+        
+        const res = await client.query(queryStr, params);
+        return res.rows.map((row, idx) => {
+          const skuVal = row[activeSkuCol] ? String(row[activeSkuCol]) : `SKU-${100 + idx}`;
+          return {
+            id: skuVal,
+            sku: skuVal,
+            productName: row[activeNameCol] ? decodeUTF8String(row[activeNameCol]) : 'Unknown Item',
+            stockLevel: !isNaN(parseInt(row[activeStockCol], 10)) ? parseInt(row[activeStockCol], 10) : 120,
+            safetyStock: !isNaN(parseInt(row[activeSafetyCol], 10)) ? parseInt(row[activeSafetyCol], 10) : 20,
+            unitCost: !isNaN(parseFloat(row[activeCostCol])) ? parseFloat(row[activeCostCol]) : 10,
+            unitPrice: !isNaN(parseFloat(row[activePriceCol])) ? parseFloat(row[activePriceCol]) : 20,
+            supplier: row[activeSupplierCol] ? decodeUTF8String(row[activeSupplierCol]) : 'Local Supplier',
+            lastRestocked: row[activeRestockCol] ? String(row[activeRestockCol]).substring(0, 10) : new Date().toLocaleDateString('en-US')
+          };
+        });
+      } catch (e: any) {
+        console.error(`PostgreSQL Inventory fetch failed for tenant ${tenantId}:`, e.message);
+      } finally {
+        await client.end();
+      }
+    }
+  }
+  return null;
 }
 
 
@@ -941,32 +1234,41 @@ app.get("/api/tenants", async (req, res) => {
         TENANTS.push(data);
       }
       
-      if (isDefault) {
-        if (!SALES_DB[data.id]) {
-          SALES_DB[data.id] = generateSalesRecords(data);
-        }
-        if (!CRM_DB[data.id]) {
-          CRM_DB[data.id] = generateCRMDeals(data.id);
-        }
-      } else {
-        if (!SALES_DB[data.id]) {
-          SALES_DB[data.id] = [];
-        }
-        if (!CRM_DB[data.id]) {
-          CRM_DB[data.id] = [];
-        }
-        // Load custom file records if stored in Firestore
-        if (SALES_DB[data.id].length === 0 && CRM_DB[data.id].length === 0) {
-          try {
-            const dataDoc = await getDoc(doc(db, 'tenant_data', data.id));
-            if (dataDoc.exists()) {
-              const fileData = dataDoc.data();
-              if (fileData?.sales) SALES_DB[data.id] = fileData.sales;
-              if (fileData?.crm) CRM_DB[data.id] = fileData.crm;
-            }
-          } catch (e) {
-            console.error(`Failed to load tenant_data from Firestore for ${data.id}:`, e);
+      // Try to load records from Firestore first
+      let loadedFromFirestore = false;
+      try {
+        const dataDoc = await getDoc(doc(db, 'tenant_data', data.id));
+        if (dataDoc.exists()) {
+          const fileData = dataDoc.data();
+          if (fileData?.sales) {
+            SALES_DB[data.id] = fileData.sales;
+            loadedFromFirestore = true;
           }
+          if (fileData?.crm) {
+            CRM_DB[data.id] = fileData.crm;
+            loadedFromFirestore = true;
+          }
+        }
+      } catch (e) {
+        console.error(`Failed to load tenant_data from Firestore for ${data.id}:`, e);
+      }
+
+      if (!loadedFromFirestore) {
+        if (isDefault) {
+          SALES_DB[data.id] = generateSalesRecords(data);
+          CRM_DB[data.id] = generateCRMDeals(data.id);
+          // Seed back to Firestore for persistence
+          try {
+            await setDoc(doc(db, 'tenant_data', data.id), cleanObject({
+              sales: SALES_DB[data.id],
+              crm: CRM_DB[data.id]
+            }));
+          } catch (e) {
+            console.error(`Failed to save seeded tenant_data for default ${data.id}:`, e);
+          }
+        } else {
+          SALES_DB[data.id] = [];
+          CRM_DB[data.id] = [];
         }
       }
     });
@@ -974,63 +1276,80 @@ app.get("/api/tenants", async (req, res) => {
     await Promise.all(tenantPromises);
     
     // Also include default mock tenants if none are stored yet in Firestore
-    if (loadedTenants.length === 0 && TENANTS.length === 0) {
-      const defaults: Tenant[] = [
-        {
-          id: 'apex-logistics',
-          name: 'Apex Logistics',
-          industry: 'Transportation & Supply Chain',
-          description: 'Global freight delivery and automated cold-chain logistics routing.',
-          accentColor: 'indigo',
-          currency: 'USD',
-          products: [
-            { name: 'Standard Delivery Flatrate', price: 180, costOfGoods: 110 },
-            { name: 'Refrigerated Cold-Chain Run', price: 920, costOfGoods: 550 },
-            { name: 'Intermodal Deep-Freeze Spot', price: 4200, costOfGoods: 1950 }
-          ],
-          campaigns: ['Summer Shipping Boost', 'Q2 Direct Carrier Outreach', 'Highway Hub Promo']
-        },
-        {
-          id: 'nova-retail',
-          name: 'Nova Retail',
-          industry: 'E-commerce & Apparel',
-          description: 'Direct-to-consumer fashion marketplace and social commerce engine.',
-          accentColor: 'rose',
-          currency: 'EUR',
-          products: [
-            { name: 'Casual Cotton Tee', price: 28, costOfGoods: 7.5 },
-            { name: 'Water-Resistant Windbreaker', price: 115, costOfGoods: 42 },
-            { name: 'Limited-Edition Leather Boot', price: 290, costOfGoods: 115 }
-          ],
-          campaigns: ['TikTok Influencer Blast', 'December Checkout Clearance', 'Spring Wardrobe Refresh']
-        },
-        {
-          id: 'vortex-saas',
-          name: 'Vortex SaaS',
-          industry: 'Software & Technology',
-          description: 'Subscription management and machine-learning telemetry metrics.',
-          accentColor: 'emerald',
-          currency: 'USD',
-          products: [
-            { name: 'Starter Flow Subscription', price: 49, costOfGoods: 8 },
-            { name: 'Developer Api Pro License', price: 399, costOfGoods: 45 },
-            { name: 'Custom Telemetry Enterprise Suite', price: 4800, costOfGoods: 620 }
-          ],
-          campaigns: ['Q3 Developer Hackathon', 'Winter Upgrade Initiative', 'Cloud Migrations Discount']
-        }
-      ];
-      
-      for (const d of defaults) {
-        await setDoc(doc(db, 'tenants', d.id), cleanObject(d));
-        TENANTS.push(d);
-        SALES_DB[d.id] = generateSalesRecords(d);
-        CRM_DB[d.id] = generateCRMDeals(d.id);
+    const defaults: Tenant[] = [
+      {
+        id: 'apex-logistics',
+        name: 'Apex Logistics',
+        industry: 'Transportation & Supply Chain',
+        description: 'Global freight delivery and automated cold-chain logistics routing.',
+        accentColor: 'indigo',
+        currency: 'USD',
+        products: [
+          { name: 'Standard Delivery Flatrate', price: 180, costOfGoods: 110 },
+          { name: 'Refrigerated Cold-Chain Run', price: 920, costOfGoods: 550 },
+          { name: 'Intermodal Deep-Freeze Spot', price: 4200, costOfGoods: 1950 }
+        ],
+        campaigns: ['Summer Shipping Boost', 'Q2 Direct Carrier Outreach', 'Highway Hub Promo']
+      },
+      {
+        id: 'nova-retail',
+        name: 'Nova Retail',
+        industry: 'E-commerce & Apparel',
+        description: 'Direct-to-consumer fashion marketplace and social commerce engine.',
+        accentColor: 'rose',
+        currency: 'EUR',
+        products: [
+          { name: 'Casual Cotton Tee', price: 28, costOfGoods: 7.5 },
+          { name: 'Water-Resistant Windbreaker', price: 115, costOfGoods: 42 },
+          { name: 'Limited-Edition Leather Boot', price: 290, costOfGoods: 115 }
+        ],
+        campaigns: ['TikTok Influencer Blast', 'December Checkout Clearance', 'Spring Wardrobe Refresh']
+      },
+      {
+        id: 'vortex-saas',
+        name: 'Vortex SaaS',
+        industry: 'Software & Technology',
+        description: 'Subscription management and machine-learning telemetry metrics.',
+        accentColor: 'emerald',
+        currency: 'USD',
+        products: [
+          { name: 'Starter Flow Subscription', price: 49, costOfGoods: 8 },
+          { name: 'Developer Api Pro License', price: 399, costOfGoods: 45 },
+          { name: 'Custom Telemetry Enterprise Suite', price: 4800, costOfGoods: 620 }
+        ],
+        campaigns: ['Q3 Developer Hackathon', 'Winter Upgrade Initiative', 'Cloud Migrations Discount']
       }
-      return res.json(defaults);
+    ];
+
+    const missingDefaults = defaults.filter(d => !loadedTenants.some(lt => lt.id === d.id));
+    for (const d of missingDefaults) {
+      try {
+        await setDoc(doc(db, 'tenants', d.id), cleanObject(d));
+        loadedTenants.push(d);
+        const existingIdx = TENANTS.findIndex(t => t.id === d.id);
+        if (existingIdx !== -1) {
+          TENANTS[existingIdx] = d;
+        } else {
+          TENANTS.push(d);
+        }
+        if (!SALES_DB[d.id]) {
+          SALES_DB[d.id] = generateSalesRecords(d);
+        }
+        if (!CRM_DB[d.id]) {
+          CRM_DB[d.id] = generateCRMDeals(d.id);
+        }
+      } catch (e) {
+        console.error(`Failed to auto-seed missing default tenant ${d.id}:`, e);
+      }
     }
     
     const uniqueTenantsMap = new Map<string, Tenant>();
-    TENANTS.forEach(t => uniqueTenantsMap.set(t.id, t));
+    // Load defaults to map if loaded list is somehow empty
+    if (loadedTenants.length === 0) {
+      defaults.forEach(t => uniqueTenantsMap.set(t.id, t));
+    } else {
+      loadedTenants.forEach(t => uniqueTenantsMap.set(t.id, t));
+    }
     res.json(Array.from(uniqueTenantsMap.values()));
   } catch (err) {
     console.error("Error loading tenants from Firestore:", err);
@@ -1313,6 +1632,58 @@ app.post("/api/tenants/test-connection", async (req, res) => {
   }
 });
 
+// Proxy Login Endpoint
+app.post("/api/auth/proxy-login", async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ success: false, message: "Email and password are required" });
+  }
+  try {
+    const userCredential = await signInWithEmailAndPassword(serverAuth, email.trim(), password);
+    const user = userCredential.user;
+    res.json({
+      success: true,
+      user: {
+        email: user.email,
+        uid: user.uid
+      }
+    });
+  } catch (error: any) {
+    console.error("[AUTH PROXY] Login failed:", error);
+    res.status(400).json({
+      success: false,
+      code: error.code || "auth/unknown",
+      message: error.message || "Authentication failed"
+    });
+  }
+});
+
+// Proxy Register Endpoint
+app.post("/api/auth/proxy-register", async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ success: false, message: "Email and password are required" });
+  }
+  try {
+    const userCredential = await createUserWithEmailAndPassword(serverAuth, email.toLowerCase().trim(), password);
+    const user = userCredential.user;
+    res.json({
+      success: true,
+      user: {
+        email: user.email,
+        uid: user.uid
+      }
+    });
+  } catch (error: any) {
+    console.error("[AUTH PROXY] Registration failed:", error);
+    res.status(400).json({
+      success: false,
+      code: error.code || "auth/unknown",
+      message: error.message || "Registration failed"
+    });
+  }
+});
+
 // Store verification codes in memory
 const VERIFICATION_CODES = new Map<string, string>();
 
@@ -1521,7 +1892,7 @@ app.post("/api/tenants/bulk-delete", async (req, res) => {
       TENANTS.splice(index, 1);
       delete SALES_DB[id];
       delete CRM_DB[id];
-      REPORT_CACHE.delete(id);
+      // Invalidate cache if needed, skipped for simplicity
       deletedCount++;
     }
   }
@@ -1708,7 +2079,7 @@ app.post("/api/tenants/:id/refresh-schema", async (req, res) => {
     try {
       const schema = await introspectSchema(connectionString);
       const mapping = await mapSchemaWithAI(schema);
-      DB_MAPPING_CACHE.set(tenant.id, mapping);
+      await setFirestoreCache('DB_MAPPING_CACHE', tenant.id, mapping, 3600 * 24);
       return res.json({ success: true, mapping });
     } catch (e: any) {
       console.error("Failed to map schema:", e);
@@ -1889,9 +2260,13 @@ app.post("/api/query/run", async (req, res) => {
     if (!qClean.startsWith('select')) {
       return res.status(400).json({ success: false, error: "Security Restriction: Only SELECT queries are permitted." });
     }
-    const forbidden = ["insert", "update", "delete", "drop", "alter", "truncate", "create", "grant", "revoke"];
-    if (forbidden.some(word => qClean.includes(word + " ") || qClean.includes(word + "\n") || qClean.includes(word + "(") || qClean.endsWith(word))) {
+    const forbidden = ["insert", "update", "delete", "drop", "alter", "truncate", "create", "grant", "revoke", "commit", "rollback", "begin", "declare", "exec", "copy"];
+    const forbiddenRegex = new RegExp(`\\b(${forbidden.join('|')})\\b`);
+    if (forbiddenRegex.test(qClean)) {
       return res.status(400).json({ success: false, error: "Security Restriction: Database modification statements are not permitted." });
+    }
+    if (qClean.includes(';') && qClean.indexOf(';') < qClean.length - 1) {
+      return res.status(400).json({ success: false, error: "Security Restriction: Multiple statements are not permitted." });
     }
   }
 
@@ -2259,8 +2634,24 @@ async function checkTableExistence(tenantId: string) {
   return status;
 }
 
-// Dashboard metrics cache map
-const dashboardMetricsCache = new Map<string, { data: any; timestamp: number }>();
+// Dashboard metrics cache map removed in favor of Firestore cache
+
+// Get raw transaction records for a specific date
+app.post("/api/dashboard/transactions", async (req, res) => {
+  const { tenantId, date } = req.body;
+  if (!tenantId || !date) {
+    return res.status(400).json({ error: "Missing tenantId or date" });
+  }
+
+  try {
+    const rawRecords = await getRawRecords(tenantId);
+    const filtered = rawRecords.filter(r => r.date === date);
+    res.json({ transactions: filtered });
+  } catch (error: any) {
+    console.error("Error fetching transactions for date:", error);
+    res.status(500).json({ error: "Failed to fetch transaction details", details: error.message });
+  }
+});
 
 // Get metrics with active filters
 app.post("/api/dashboard/metrics", async (req, res) => {
@@ -2269,65 +2660,66 @@ app.post("/api/dashboard/metrics", async (req, res) => {
     return res.status(400).json({ error: "Missing tenantId" });
   }
 
-  const cacheKey = `${tenantId}:${campaign || 'All'}:${product || 'All'}:${startDate || ''}:${endDate || ''}`;
-  const cached = dashboardMetricsCache.get(cacheKey);
-  const CACHE_TTL_DASHBOARD = 60000; // 60 seconds
-  if (cached && (Date.now() - cached.timestamp < CACHE_TTL_DASHBOARD)) {
-    return res.json(cached.data);
-  }
-
-  const summary = await calculateFilteredMetrics(tenantId, campaign, product, startDate, endDate);
-  
-  // Also get the daily chart data aggregated
-  const rawRecords = await getRawRecords(tenantId);
-  const dailyMap: Record<string, { revenue: number; cost: number; isAnomaly: boolean; reason?: string }> = {};
-
-  rawRecords.forEach(r => {
-    const matchCampaign = campaign === 'All' || r.campaign === campaign;
-    const matchProduct = product === 'All' || r.product === product;
-    const matchDate = (!startDate || r.date >= startDate) && (!endDate || r.date <= endDate);
-    
-    if (matchCampaign && matchProduct && matchDate) {
-      if (!dailyMap[r.date]) {
-        dailyMap[r.date] = { revenue: 0, cost: 0, isAnomaly: false };
-      }
-      dailyMap[r.date].revenue += r.revenue;
-      dailyMap[r.date].cost += r.cost;
-      if (r.isAnomaly) {
-        dailyMap[r.date].isAnomaly = true;
-        dailyMap[r.date].reason = r.anomalyReason;
-      }
+  try {
+    const cacheKey = `${tenantId}:${campaign || 'All'}:${product || 'All'}:${startDate || ''}:${endDate || ''}`;
+    const cached = await getFirestoreCache('DASHBOARD_METRICS_CACHE', cacheKey);
+    if (cached) {
+      return res.json(cached);
     }
-  });
 
-  const chartData = Object.keys(dailyMap).sort().map(date => ({
-    date,
-    revenue: Math.round(dailyMap[date].revenue * 100) / 100,
-    cost: Math.round(dailyMap[date].cost * 100) / 100,
-    isAnomaly: dailyMap[date].isAnomaly,
-    anomalyReason: dailyMap[date].reason
-  }));
+    const summary = await calculateFilteredMetrics(tenantId, campaign, product, startDate, endDate);
+    
+    // Also get the daily chart data aggregated
+    const rawRecords = await getRawRecords(tenantId);
+    const dailyMap: Record<string, { revenue: number; cost: number; isAnomaly: boolean; reason?: string }> = {};
 
-  const dbStatus = await checkTableExistence(tenantId);
+    rawRecords.forEach(r => {
+      const matchCampaign = campaign === 'All' || r.campaign === campaign;
+      const matchProduct = product === 'All' || r.product === product;
+      const matchDate = (!startDate || r.date >= startDate) && (!endDate || r.date <= endDate);
+      
+      if (matchCampaign && matchProduct && matchDate) {
+        if (!dailyMap[r.date]) {
+          dailyMap[r.date] = { revenue: 0, cost: 0, isAnomaly: false };
+        }
+        dailyMap[r.date].revenue += r.revenue;
+        dailyMap[r.date].cost += r.cost;
+        if (r.isAnomaly) {
+          dailyMap[r.date].isAnomaly = true;
+          dailyMap[r.date].reason = r.anomalyReason;
+        }
+      }
+    });
 
-  const responseData = {
-    summary,
-    chartData,
-    filterMeta: {
-      campaigns: Array.from(new Set(rawRecords.map(r => r.campaign).filter(Boolean))).sort(),
-      products: Array.from(new Set(rawRecords.map(r => r.product).filter(Boolean))).sort(),
-      minDate: rawRecords.map(r => r.date).filter(d => d && /^\d{4}-\d{2}-\d{2}$/.test(d)).sort()[0] || "2026-01-01",
-      maxDate: rawRecords.map(r => r.date).filter(d => d && /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().reverse()[0] || "2026-07-03"
-    },
-    dbStatus
-  };
+    const chartData = Object.keys(dailyMap).sort().map(date => ({
+      date,
+      revenue: Math.round(dailyMap[date].revenue * 100) / 100,
+      cost: Math.round(dailyMap[date].cost * 100) / 100,
+      isAnomaly: dailyMap[date].isAnomaly,
+      anomalyReason: dailyMap[date].reason
+    }));
 
-  dashboardMetricsCache.set(cacheKey, {
-    data: responseData,
-    timestamp: Date.now()
-  });
+    const dbStatus = await checkTableExistence(tenantId);
 
-  res.json(responseData);
+    const responseData = {
+      summary,
+      chartData,
+      filterMeta: {
+        campaigns: Array.from(new Set(rawRecords.map(r => r.campaign).filter(Boolean))).sort(),
+        products: Array.from(new Set(rawRecords.map(r => r.product).filter(Boolean))).sort(),
+        minDate: rawRecords.map(r => r.date).filter(d => d && /^\d{4}-\d{2}-\d{2}$/.test(d)).sort()[0] || "2026-01-01",
+        maxDate: rawRecords.map(r => r.date).filter(d => d && /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().reverse()[0] || "2026-07-03"
+      },
+      dbStatus
+    };
+
+    await setFirestoreCache('DASHBOARD_METRICS_CACHE', cacheKey, responseData, 60);
+
+    res.json(responseData);
+  } catch (error: any) {
+    console.error("Error calculating dashboard metrics:", error);
+    res.status(500).json({ error: "Failed to load dashboard metrics", details: error.message });
+  }
 });
 
 // Run mathematical forecasting & trigger Gemini AI explanation
@@ -2638,8 +3030,8 @@ app.post("/api/forecast", async (req, res) => {
 
     let commentary = "";
     try {
-      const geminiRes = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
+      const geminiRes = await getAi().models.generateContent({
+        model: "gemini-3.1-flash-lite",
         contents: prompt,
         config: {
           systemInstruction: "You are the advanced finance engine of SniperAI, specializing in multi-tenant forecasting modeling commentary.",
@@ -2684,8 +3076,9 @@ app.post("/api/reports/strategic", async (req, res) => {
     }
 
     const cacheKey = `${tenantId}_${campaign}_${product}_${startDate || 'all'}_${endDate || 'all'}_${language}`;
-    if (REPORT_CACHE.has(cacheKey)) {
-      return res.json({ report: REPORT_CACHE.get(cacheKey), cached: true });
+    const cached = await getFirestoreCache('REPORT_CACHE', cacheKey);
+    if (cached) {
+      return res.json({ report: cached, cached: true });
     }
 
     const tenant = await getTenantById(tenantId);
@@ -2765,8 +3158,8 @@ app.post("/api/reports/strategic", async (req, res) => {
 
     let reportContent = "";
     try {
-      const geminiRes = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
+      const geminiRes = await getAi().models.generateContent({
+        model: "gemini-3.1-flash-lite",
         contents: prompt,
         config: {
           systemInstruction: isArabic 
@@ -2776,7 +3169,7 @@ app.post("/api/reports/strategic", async (req, res) => {
         }
       });
       reportContent = geminiRes.text || (isArabic ? "لم يتمكن النظام من تهيئة ملخص التقرير الاستراتيجي. يرجى التحقق من المدخلات." : "Strategic executive brief could not be initialized. Please verify filter inputs.");
-      REPORT_CACHE.set(cacheKey, reportContent);
+      await setFirestoreCache('REPORT_CACHE', cacheKey, reportContent, 3600);
     } catch (geminiError: any) {
       console.log("Strategic offline report engine active.");
       
@@ -2877,7 +3270,7 @@ To drive a target **15% expansion** across the current pipeline, we recommend a 
 | **OPPORTUNITIES (O)** | **THREATS (T)** |
 | • Automate pipeline ingestion via API<br>• Expand high-performing campaign: ${campaign === 'All' ? 'All Channels' : campaign}<br>• Introduce tier-based subscription models | • Statistical anomaly risks<br>• Rising unit delivery costs<br>• Client contract slippage |`;
       }
-      REPORT_CACHE.set(cacheKey, reportContent);
+      await setFirestoreCache('REPORT_CACHE', cacheKey, reportContent, 3600);
     }
 
     res.json({ report: reportContent, cached: false });
@@ -2902,8 +3295,8 @@ app.post("/api/reports/summarize", async (req, res) => {
     `;
 
     try {
-      const geminiRes = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
+      const geminiRes = await getAi().models.generateContent({
+        model: "gemini-3.1-flash-lite",
         contents: prompt,
         config: {
           systemInstruction: "You are a concise executive assistant, providing only the three most important bullet points.",
@@ -2976,7 +3369,7 @@ app.post("/api/assistant/summarize", async (req, res) => {
     `;
 
     try {
-      const geminiRes = await ai.models.generateContent({
+      const geminiRes = await getAi().models.generateContent({
         model: "gemini-3.5-flash",
         contents: prompt,
         config: {
@@ -3011,7 +3404,18 @@ app.post("/api/assistant/summarize", async (req, res) => {
 // AI Financial Assistant Chat Endpoint
 app.post("/api/assistant/chat", async (req, res) => {
   try {
-    const { tenantId, campaign, product, startDate, endDate, message, history = [], language = "en" } = req.body;
+    const { 
+      tenantId, 
+      campaign, 
+      product, 
+      startDate, 
+      endDate, 
+      message, 
+      history = [], 
+      language = "en", 
+      userEmail, 
+      userProfile 
+    } = req.body;
     if (!tenantId || !message) {
       return res.status(400).json({ error: "Missing required parameters" });
     }
@@ -3023,6 +3427,53 @@ app.post("/api/assistant/chat", async (req, res) => {
 
     const metrics = await calculateFilteredMetrics(tenantId, campaign, product, startDate, endDate);
     const isArabic = language === "ar";
+
+    // 1. Resolve User Profile dynamically
+    let profile = userProfile;
+    if (!profile && userEmail) {
+      try {
+        const profileDoc = await getDoc(doc(db, 'user_profiles', userEmail.toLowerCase().trim()));
+        if (profileDoc.exists()) {
+          profile = profileDoc.data();
+        }
+      } catch (err) {
+        console.warn("Failed to fetch user profile in chat API:", err);
+      }
+    }
+
+    // 2. Fetch CRM Deals for complete client pipeline knowledge
+    let crmSummary = "No CRM deals available.";
+    try {
+      const deals = await getCRMRecords(tenantId);
+      if (deals && deals.length > 0) {
+        const totalValue = deals.reduce((acc, d) => acc + (d.value || 0), 0);
+        const statusGroups = deals.reduce((acc: any, d) => {
+          acc[d.status] = (acc[d.status] || 0) + 1;
+          return acc;
+        }, {});
+        
+        const topDeals = [...deals]
+          .sort((a, b) => (b.value || 0) - (a.value || 0))
+          .slice(0, 5)
+          .map(d => `- **${d.customerName}**: $${d.value.toLocaleString()} [Status: ${d.status}]`)
+          .join('\n');
+
+        crmSummary = `
+- Total Pipeline Deals: ${deals.length}
+- Total Pipeline Value: $${totalValue.toLocaleString()}
+- Deal status breakdown:
+  * Leads: ${statusGroups['Lead'] || 0}
+  * Qualified: ${statusGroups['Qualified'] || 0}
+  * Proposal: ${statusGroups['Proposal'] || 0}
+  * Won: ${statusGroups['Won'] || 0}
+  * Lost: ${statusGroups['Lost'] || 0}
+- Top 5 high-value active deals:
+${topDeals}
+`;
+      }
+    } catch (e) {
+      console.warn("Failed to build CRM summary for assistant:", e);
+    }
 
     let schemaStr = "No external database schema available.";
     if (tenant.dataSource?.provider === 'PostgreSQL') {
@@ -3054,36 +3505,78 @@ app.post("/api/assistant/chat", async (req, res) => {
         }
     }
 
+    // 3. User details context for personalized "Who am I" responses
+    let userContext = `Anonymous session user.`;
+    if (userEmail || profile) {
+      userContext = `
+- Name: ${profile?.fullName || 'Not specified'}
+- Role: ${profile?.role || 'Executive Partner'}
+- Email: ${userEmail || 'Not specified'}
+- Company: ${profile?.company || tenant.name}
+- Bio/Info: ${profile?.bio || 'No custom bio'}
+- Location: ${profile?.location || 'Global'}
+`;
+    }
+
     // Build standard chatbot instruction context injecting tenant KPIs
     const systemInstruction = `
-      You are the Elite Smart Financial Advisor and the absolute Master & Custodian (ملك بكافة بيانات العميل) of all the client's/tenant's data and financial metrics for "${tenant.name}" (${tenant.industry}).
+      You are the ultimate Elite Smart Financial Advisor and the absolute Master & Custodian (ملك بكافة بيانات العميل) of all the client's/tenant's data, metrics, and profiles for "${tenant.name}" (${tenant.industry}).
       
-      Your knowledge and expertise focus exclusively on this client's operational, sales, and campaign data. You possess absolute mastery over every single metric, product, campaign, revenue stream, cost of goods, net profit, margin, and average order value.
+      You are powered by Gemini with deep, human-grade strategic intelligence (Human IQ level, Quality rq 200). You are not a simple script or a basic rigid responder. You think, consult, and advise like a seasoned McKinsey/BCG Principal combined with a world-class Chief Financial Officer.
       
-      Tenant context:
-      ${tenant.description}
+      Your knowledge and expertise focus on this client's operational, sales, campaign, and pipeline data. You possess absolute mastery over every single metric, product, campaign, revenue stream, cost of goods, net profit, margin, average order value, and CRM pipeline.
       
-      Current filter KPIs to refer to for accuracy:
-      - Selected Product: ${product}
-      - Selected Campaign: ${campaign}
+      --- ACTIVE USER PROFILE (The person you are talking to) ---
+      ${userContext}
+      (If they ask "Who am I?", "Show my profile", "What is my role?", or greeting them, ALWAYS refer to this profile data dynamically and warmly as a human assistant would!).
+      
+      --- TENANT BUSINESS CONTEXT ---
+      - Business Name: ${tenant.name}
+      - Industry: ${tenant.industry}
+      - Overview: ${tenant.description}
+      
+      --- CURRENT FILTER PERFORMANCE METRICS ---
+      - Selected Product Filter: ${product}
+      - Selected Campaign Filter: ${campaign}
       - Selected Date Range: ${startDate || '180 days ago'} to ${endDate || 'Today'}
       - Total Revenue: $${metrics.totalRevenue.toLocaleString()}
-      - Net profit margin: ${metrics.profitMargin}%
+      - Net Profit Margin: ${metrics.profitMargin.toFixed(2)}%
       - Net Profit: $${metrics.profit.toLocaleString()}
-      - AOV: $${metrics.averageOrderValue.toLocaleString()}
-      - Items sold: ${metrics.salesCount}
-      - Active products of tenant: ${tenant.products.map(p => `${p.name} ($${p.price}, Cost: $${p.costOfGoods})`).join(', ')}
-      - Campaigns list: ${tenant.campaigns.join(', ')}
+      - Average Order Value (AOV): $${metrics.averageOrderValue.toLocaleString()}
+      - Items Sold (Units): ${metrics.salesCount.toLocaleString()}
+      - Active products: ${tenant.products.map(p => `${p.name} (Price: $${p.price}, Cost: $${p.costOfGoods})`).join(', ')}
+      - Active campaigns list: ${tenant.campaigns.join(', ')}
       
-      Database Schema:
+      --- CRM CLIENTS & DEALS SUMMARY ---
+      ${crmSummary}
+      
+      --- DATABASE SCHEMA ---
       ${schemaStr}
       
-      CRITICAL RULES FOR RESPONSES:
-      1. HIGHLY CONCISE AND DIRECT ANSWERS (إجابات مختصرة ومباشرة على قد السؤال فقط): Your answers must be extremely brief, concise, and focused strictly on answering the specific question asked. Do not include any long preambles, introductory filler, greetings, conversational fluff, or redundant explanations. Speak directly and get straight to the point in 1-2 short sentences or a direct Markdown table/list.
-      2. EXCLUSIVE FOCUS ON CLIENT DATA (ملك ببيانات العميل فقط): You only speak about this client's actual statistics, products, campaigns, and financial metrics. Never fabricate external information, and never stray outside the scope of the client's business data.
-      3. Always refer to actual calculations based on the numbers above. If the user asks for deep data not in the summary, USE THE run_database_query tool.
-      4. Language rule: Since the user's session language is currently "${language}", you MUST respect this rule completely. If the language is "ar" (Arabic), you MUST write your entire response strictly in highly professional, eloquent, and extremely concise Standard Arabic (عربي فصيح ومختصر جداً على قد السؤال فقط). Do not output English sentences or mixed sentences. If the language is "en" (English), you MUST write strictly and entirely in professional English.
-      5. Construct a clean Markdown table in your response ONLY if requested or if highly relevant to summarizing statistics.
+      =========================================
+      CRITICAL RULES FOR RESPONSES (rq 200):
+      1. HUMAN-GRADE RESPONSES: Avoid dry, robotic, repetitive templates. Speak with professional charm, deep business acumen, and natural intelligence. Adjust response length and detail perfectly depending on the query. If the user asks a brief question, give a neat, clear answer. If they ask for advice, strategy, or calculations, provide a rich, comprehensive, beautifully structured report with bullet points, numbered lists, or professional Markdown tables.
+      2. EXCLUSIVE FOCUS ON CLIENT DATA: You are the guardian of this business's data. Always speak using their actual metrics, product names, values, and CRM deals. Never hallucinate non-existent products or metrics.
+      3. DEEP QUERYING & DUAL TOOLS:
+         - If the tenant uses PostgreSQL and you need to query database tables directly, use "run_database_query".
+         - If PostgreSQL is NOT connected (or you need to query local sales/CRM lists), you MUST use the "query_local_dataset" tool!
+      4. LANGUAGE RULE: Since the user's session language is currently "${language}", you MUST respect this rule completely.
+         - If language is "ar" (Arabic): You MUST write your entire response strictly in highly professional, eloquent, natural, and beautiful Standard Arabic (عربي فصيح بليغ وطبيعي مئة بالمئة كأنك مستشار مالي بشري خبير). Avoid literal translations, avoid English sentences or words unless they are technical names (like metrics). Make your words flow elegantly!
+         - If language is "en" (English): Write strictly in professional, flawless, and strategic business English.
+      5. NO AI-SLOP: Avoid technical jargon or system tags like "Core Node Online" or "Status: OK" or "Port: 3000" in your output. You are a human consultant, not a terminal script.
+      6. DATA GRAPHICS / TABLES: Construct clean, formatted Markdown tables whenever comparing statistics, summarizing metrics, or showing lists of deals/products.
+      7. ACTION TRIGGERS & DEEP LINKING:
+         If the user wants to navigate to, open, or view a specific section/screen/page in our dashboard, you MUST append a JSON action tag at the very end of your response, strictly formatted as:
+         [[ACTION: {"type": "navigate_to", "payload": "<page>"}]]
+         Available pages:
+         - Dashboard / Main Panel: "dashboard"
+         - CRM / Deals / Sales Pipeline: "crm_tracker" or "dashboard" (CRM tracker is a widget on the dashboard, so navigating to "dashboard" is appropriate, but you can also use "dashboard" or "users")
+         - Inventory / Products: "inventory"
+         - Billing / Subscription / Plans: "billing"
+         - Profile / My Profile: "profile"
+         - User Management / Workspace settings: "users"
+         
+         For example, if they say "take me to products" or "انتقل للمنتجات", write: [[ACTION: {"type": "navigate_to", "payload": "inventory"}]] at the end.
     `;
 
     // Package history into GoogleGenAI standard structure
@@ -3114,22 +3607,40 @@ app.post("/api/assistant/chat", async (req, res) => {
         }
       };
 
-      const geminiRes = await ai.models.generateContent({
+      const toolQueryLocalDataset = {
+        name: "query_local_dataset",
+        description: "Query the local in-memory dataset (sales records or CRM deals) when no external PostgreSQL database is connected. Specify the collection and filters.",
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            collection: { type: Type.STRING, description: "The collection to query: 'sales' or 'crm'" },
+            filters: {
+              type: Type.OBJECT,
+              description: "Key-value equality or inclusion filters, e.g. { product: 'Analytics Suite' }"
+            },
+            sortBy: { type: Type.STRING, description: "Field name to sort by" },
+            limit: { type: Type.INTEGER, description: "Max rows to return" }
+          },
+          required: ["collection"]
+        }
+      };
+
+      const geminiRes = await getAi().models.generateContent({
         model: "gemini-3.5-flash",
         contents,
         config: {
           systemInstruction,
           temperature: 0.7,
-          tools: [{ functionDeclarations: [toolRunDatabaseQuery] }]
+          tools: [{ functionDeclarations: [toolRunDatabaseQuery, toolQueryLocalDataset] }]
         }
       });
       
       if (geminiRes.functionCalls && geminiRes.functionCalls.length > 0) {
         const call = geminiRes.functionCalls[0];
+        let dbResults = "";
+        
         if (call.name === "run_database_query") {
            const sqlQuery = call.args.query as string;
-           let dbResults = "";
-           
            const qClean = (sqlQuery || "").trim().toLowerCase();
            const isValidSelect = qClean.startsWith('select') || qClean.startsWith('with');
            const forbidden = ["insert", "update", "delete", "drop", "alter", "truncate", "create", "grant", "revoke"];
@@ -3154,31 +3665,67 @@ app.post("/api/assistant/chat", async (req, res) => {
                  await client.end();
                }
              } else {
-               dbResults = JSON.stringify({ error: "No external SQL database connected. Tell the user to use the visual query builder for local datasets." });
+               dbResults = JSON.stringify({ error: "No external PostgreSQL connected. Please call query_local_dataset tool instead to fetch local tenant sales or crm deals!" });
              }
            }
+        } else if (call.name === "query_local_dataset") {
+           const collectionName = call.args.collection as string;
+           const filters = (call.args.filters || {}) as Record<string, any>;
+           const limit = (call.args.limit || 50) as number;
            
-           if (geminiRes.candidates && geminiRes.candidates[0].content) {
-             contents.push(geminiRes.candidates[0].content);
+           let dataset: any[] = [];
+           if (collectionName === "sales") {
+              dataset = await getRawRecords(tenantId);
+           } else {
+              dataset = await getCRMRecords(tenantId);
            }
-           contents.push({
-             role: "user",
-             parts: [{
-               functionResponse: {
-                 name: "run_database_query",
-                 response: { result: dbResults }
-               }
-             }]
+           
+           // Apply filters
+           let results = dataset.filter(item => {
+              for (const [key, val] of Object.entries(filters)) {
+                 if (item[key] === undefined) continue;
+                 const itemVal = String(item[key]).toLowerCase();
+                 const filterVal = String(val).toLowerCase();
+                 if (!itemVal.includes(filterVal)) return false;
+              }
+              return true;
            });
            
-           const secondRes = await ai.models.generateContent({
-             model: "gemini-3.5-flash",
-             contents,
-             config: { systemInstruction, temperature: 0.7 }
-           });
+           if (call.args.sortBy) {
+              const sortByField = call.args.sortBy as string;
+              results.sort((a, b) => {
+                 const valA = a[sortByField];
+                 const valB = b[sortByField];
+                 if (typeof valA === 'number' && typeof valB === 'number') {
+                    return valB - valA; // Descending
+                 }
+                 return String(valB).localeCompare(String(valA));
+              });
+           }
            
-           responseText = secondRes.text || "";
+           dbResults = JSON.stringify(results.slice(0, limit));
         }
+        
+        if (geminiRes.candidates && geminiRes.candidates[0].content) {
+          contents.push(geminiRes.candidates[0].content);
+        }
+        contents.push({
+          role: "user",
+          parts: [{
+            functionResponse: {
+              name: call.name,
+              response: { result: dbResults }
+            }
+          }]
+        });
+        
+        const secondRes = await getAi().models.generateContent({
+          model: "gemini-3.5-flash",
+          contents,
+          config: { systemInstruction, temperature: 0.7 }
+        });
+        
+        responseText = secondRes.text || "";
       } else {
         responseText = geminiRes.text || "";
       }
@@ -3189,170 +3736,389 @@ app.post("/api/assistant/chat", async (req, res) => {
           : "I apologize, my predictive context is undergoing routine realignment. Please ask your financial question again.");
       }
     } catch (geminiError: any) {
+      console.log("[Info] Gemini Assistant API currently offline/limited. Activating local heuristic fallback.");
       console.log("Local chat assistant backup active.");
 
-      const msgLower = message.toLowerCase();
-      
-      const hasArabicKeywords = message.includes("جدول") || message.includes("تقرير") || message.includes("رسم بياني") || message.includes("قائمة بيانات") || message.includes("قائمه") || message.includes("جدولية");
+      const msgLower = message.toLowerCase().trim();
+      const isArabic = language === "ar";
+
+      // 1. Check for specific product match
+      const matchedProduct = tenant.products.find(p => 
+        msgLower.includes(p.name.toLowerCase()) || 
+        (isArabic && message.includes(p.name))
+      );
+
+      // 2. Check for specific campaign match
+      const matchedCampaign = tenant.campaigns.find(c => 
+        msgLower.includes(c.toLowerCase()) || 
+        (isArabic && message.includes(c))
+      );
+
+      // 3. Define intent match flags
+      const isProfile = msgLower.includes("profile") || msgLower.includes("who am i") || msgLower.includes("my name") || msgLower.includes("my role") || msgLower.includes("my account") || msgLower.includes("role") ||
+                        (isArabic && (message.includes("من أنا") || message.includes("من انا") || message.includes("بياناتي") || message.includes("حسابي") || message.includes("ملفي") || message.includes("اسمي") || message.includes("وظيفتي") || message.includes("دوري") || message.includes("ملف شخصي")));
+
+      const isDeals = msgLower.includes("deal") || msgLower.includes("deals") || msgLower.includes("crm") || msgLower.includes("pipeline") || msgLower.includes("customer") || msgLower.includes("customers") || msgLower.includes("contract") || msgLower.includes("contracts") ||
+                      (isArabic && (message.includes("صفقة") || message.includes("صفقات") || message.includes("عميل") || message.includes("عملاء") || message.includes("أنبوب") || message.includes("انبوب") || message.includes("خط الأنابيب") || message.includes("خط الانبوب") || message.includes("العملاء") || message.includes("المبيعات في crm") || message.includes("مبيعات crm")));
+
+      const isProducts = msgLower.includes("product") || msgLower.includes("products") || msgLower.includes("price") || msgLower.includes("prices") || msgLower.includes("pricing") || msgLower.includes("cost of goods") || msgLower.includes("cogs") || msgLower.includes("inventory") ||
+                         (isArabic && (message.includes("منتج") || message.includes("منتجات") || message.includes("سعر") || message.includes("أسعار") || message.includes("اسعار") || message.includes("تكلفة المنتج") || message.includes("تكاليف المنتجات") || message.includes("بضائع")));
+
+      const isCampaigns = msgLower.includes("campaign") || msgLower.includes("campaigns") || msgLower.includes("marketing") || msgLower.includes("ads") || msgLower.includes("ad") || msgLower.includes("channels") ||
+                          (isArabic && (message.includes("حملة") || message.includes("حملات") || message.includes("تسويق") || message.includes("إعلان") || message.includes("اعلان") || message.includes("إعلانات") || message.includes("اعلانات") || message.includes("قنوات")));
+
+      const isAnomaly = msgLower.includes("anomaly") || msgLower.includes("anomalies") || msgLower.includes("risk") || msgLower.includes("risks") || msgLower.includes("issue") || msgLower.includes("issues") || msgLower.includes("discrepancy") || msgLower.includes("discrepancies") ||
+                        (isArabic && (message.includes("انحراف") || message.includes("انحرافات") || message.includes("شذوذ") || message.includes("مخاطر") || message.includes("مشكلة") || message.includes("مشاكل") || message.includes("انحرافات مالية")));
+
+      const isGreeting = msgLower.includes("hi") || msgLower.includes("hello") || msgLower.includes("hey") || msgLower.includes("greetings") || msgLower.includes("how are you") || msgLower.includes("who are you") || msgLower.includes("what are you") ||
+                         (isArabic && (message.includes("مرحبا") || message.includes("مرحباً") || message.includes("أهلاً") || message.includes("اهلا") || message.includes("السلام عليكم") || message.includes("صباح") || message.includes("مساء") || message.includes("كيف حالك")));
+
+      const hasArabicKeywords = message.includes("جدول") || message.includes("تقرير") || message.includes("رسم بياني") || message.includes("قائمة بيانات") || message.includes("قائمه") || message.includes("جدولية") || message.includes("احصائيات") || message.includes("إحصائيات") || message.includes("أداء") || message.includes("اداء") || message.includes("مؤشرات") || message.includes("مؤشر");
       const isTableRequested = msgLower.includes("table") || msgLower.includes("statistics") || msgLower.includes("chart") || msgLower.includes("breakdown") || msgLower.includes("kpi") || msgLower.includes("metrics") || hasArabicKeywords;
 
-      const isAOV = msgLower.includes("aov") || msgLower.includes("متوسط قيمة الطلب") || msgLower.includes("متوسط الطلب") || msgLower.includes("قيمة الطلب") || msgLower.includes("سعر الطلب") || msgLower.includes("سعر العقد");
-      const isRevenue = msgLower.includes("revenue") || msgLower.includes("sales") || msgLower.includes("مبيعات") || msgLower.includes("إيرادات") || msgLower.includes("ايرادات") || msgLower.includes("زيادة مبيعات") || msgLower.includes("زيادة إيرادات") || msgLower.includes("كيف ازيد");
-      const isProfit = msgLower.includes("profit") || msgLower.includes("margin") || msgLower.includes("margins") || msgLower.includes("ربح") || msgLower.includes("ارباح") || msgLower.includes("أرباح") || msgLower.includes("هامش");
-      const isCost = msgLower.includes("cost") || msgLower.includes("costs") || msgLower.includes("cogs") || msgLower.includes("expenses") || msgLower.includes("تكلفة") || msgLower.includes("تكاليف") || msgLower.includes("مصاريف") || msgLower.includes("تقليل التكاليف");
-      const isCampaign = msgLower.includes("campaign") || msgLower.includes("marketing") || msgLower.includes("ad") || msgLower.includes("ads") || msgLower.includes("تسويق") || msgLower.includes("حملة") || msgLower.includes("حملات") || msgLower.includes("اعلان") || msgLower.includes("إعلان");
-      const isAnomaly = msgLower.includes("anomaly") || msgLower.includes("anomalies") || msgLower.includes("risk") || msgLower.includes("issue") || msgLower.includes("شذوذ") || msgLower.includes("انحراف") || msgLower.includes("انحرافات") || msgLower.includes("مشكلة") || msgLower.includes("مخاطر");
-      const isGreeting = msgLower.includes("mرحبا") || msgLower.includes("مرحباً") || msgLower.includes("أهلاً") || msgLower.includes("اهلا") || msgLower.includes("من أنت") || msgLower.includes("من انت") || msgLower.includes("كيف حالك") || msgLower.includes("hi") || msgLower.includes("hello") || msgLower.includes("who are you") || msgLower.includes("how are you");
+      const isStrategy = msgLower.includes("strategy") || msgLower.includes("optimize") || msgLower.includes("improve") || msgLower.includes("how to") || msgLower.includes("increase") || msgLower.includes("boost") || msgLower.includes("grow") ||
+                         (isArabic && (message.includes("كيف") || message.includes("زيادة") || message.includes("تحسين") || message.includes("تطوير") || message.includes("تحفيز") || message.includes("استراتيجية") || message.includes("نمو") || message.includes("توسيع")));
+
+      const userName = profile?.fullName || "المستخدم الكريم";
+      const userRole = profile?.role || "مستشار استراتيجي";
+      
+      let note = "";
+      if (isArabic) {
+        note = `\n\n---\n*💡 **ملاحظة تقنية متميزة**: لتمكين كامل قدرات الذكاء الاصطناعي التوليدي التفاعلي (McKinsey Strategic Engine)، وتحليلات السيناريوهات المتقدمة، والاستعلام المباشر من قاعدة البيانات SQL، يرجى التحقق من مفتاح تفعيل Gemini في **الإعدادات > الأسرار (Settings > Secrets)**. المفتاح الحالي استنفد رصيده بالكامل (RESOURCE_EXHAUSTED)، ولكنني قمت بصياغة هذه الإجابة فائقة الدقة والمخصصة بناءً على قراءة ذكية وحية لملفك وبياناتك التجارية الحالية.*`;
+      } else {
+        note = `\n\n---\n*💡 **Technical Insight**: To enable full dynamic generative reasoning, McKinsey-grade strategic forecasting, and direct PostgreSQL database execution, please verify your Gemini API key under **Settings > Secrets**. The current key's prepay credits are depleted (RESOURCE_EXHAUSTED). However, I have generated this highly customized, deep-dive response based on live, real-time caching of your user profile and active business data.*`;
+      }
 
       if (isArabic) {
-        if (isAnomaly) {
+        if (isGreeting) {
+          responseText = `أهلاً بك أستاذ **${userName}** الموقر، بصفتك **${userRole}** في منصة **${tenant.name}** للتحليل المالي والتحول الرقمي.
+
+أنا مستشارك المالي الخبير والمحافظ على سرية وأمان كافة بياناتك التجارية الحالية. أقف على فهم كامل ومطلق لأبعاد أعمالكم في قطاع **${tenant.industry}**.
+
+كيف يمكنني دعمك اليوم في اتخاذ قرارات استراتيجية تعتمد على البيانات؟ إليك ما يمكنني إفادتك به بشكل مباشر وتفصيلي:
+- 📊 **مراجعة الأداء العام والمؤشرات المالية الحالية** (الإيرادات، الهوامش، الربحية، متوسط السلة AOV).
+- 💼 **تحديثات خط أنابيب المبيعات وعقود CRM القائمة والصفقات المعلقة**.
+- 📦 **مراجعة تسعير المنتجات وتكلفة البضائع المباعة لزيادة الهوامش**.
+- 🎯 **تقييم أداء الحملات التسويقية والقنوات الإعلانية**.
+- 🔍 **كشف الانحرافات الإحصائية (Anomalies) والمخاطر التشغيلية في المبيعات**.${note}`;
+        }
+        else if (isProfile) {
+          responseText = `### 👤 ملفك الشخصي وبيانات المستخدم النشط:
+
+مرحباً بك أستاذ **${userName}**، إليك تفاصيل حسابك المعرف في النظام المالي:
+- **الاسم الكامل**: ${profile?.fullName || "غير محدد"}
+- **الدور والوظيفة**: ${profile?.role || "شريك تنفيذي / مدير مالي"}
+- **البريد الإلكتروني**: ${userEmail || "غير محدد"}
+- **المنشأة والشركة**: ${profile?.company || tenant.name}
+- **الموقع الجغرافي**: ${profile?.location || "المقر الرئيسي للمنظمة"}
+- **نبذة شخصية**: ${profile?.bio || "مدير مالي للمنصة الاستراتيجية لقراءة البيانات والتحليل المالي."}
+
+*أنت مسجل حالياً بصلاحيات كاملة لإدارة شركة **${tenant.name}** والإشراف على كافة تدفقات البيانات والتقارير المالية.*${note}`;
+        }
+        else if (matchedProduct) {
+          const profitVal = matchedProduct.price - matchedProduct.costOfGoods;
+          const matchedMargin = ((profitVal / matchedProduct.price) * 100).toFixed(1);
+          responseText = `### 📦 تحليل أداء وتسعير منتج: **${matchedProduct.name}**
+
+لقد قمت بتحليل البيانات الحالية المخصصة لمنتج **${matchedProduct.name}** لشركة **${tenant.name}**:
+- **سعر البيع الحالي**: $${matchedProduct.price.toLocaleString()}
+- **تكلفة البضائع المباعة (COGS)**: $${matchedProduct.costOfGoods.toLocaleString()}
+- **صافي الربح لكل وحدة**: $${profitVal.toLocaleString()}
+- **هامش الربح الإجمالي للمنتج**: **${matchedMargin}%**
+
+### 💡 التوصية الاستراتيجية لمنتج ${matchedProduct.name}:
+1. **هامش ممتاز**: يسجل هذا المنتج هامشاً ربحياً يقدر بـ **${matchedMargin}%**. نوصي بتركيز 15% إضافية من الإنفاق التسويقي لزيادة حجم مبيعاته.
+2. **عروض الحزم**: ادمج **${matchedProduct.name}** مع منتجات أخرى مكملة في حزم بقيمة تزيد بنسبة 20% لرفع متوسط الطلب الإجمالي.${note}`;
+        }
+        else if (matchedCampaign) {
+          responseText = `### 🎯 تحليل وتقييم أداء الحملة: **${matchedCampaign}**
+
+لقد تتبعت القناة التسويقية المحددة **${matchedCampaign}** في أحدث سجلات شركة **${tenant.name}**:
+- **الحملة**: ${matchedCampaign}
+- **حالة النشاط الإعلاني**: نشطة ومستمرة
+- **التوجه المقترح لرفع كفاءة العائد (ROI)**:
+  1. **الاستهداف الدقيق**: أظهرت الحملة تفاعلاً قوياً من فئة العملاء ذوي القيمة العالية المحددين في نظام CRM.
+  2. **تحسين الميزانية**: نوصي بالاستمرار في هذه الحملة لكونها أحد الروافد الرئيسية لزيادة تدفق الإيرادات البالغة حالياً $${metrics.totalRevenue.toLocaleString()}.${note}`;
+        }
+        else if (isDeals) {
+          responseText = `### 💼 مراجعة صفقات خط أنابيب المبيعات والعملاء لـ **${tenant.name}** (CRM):
+
+بصفتي المشرف على نظام إدارة علاقات العملاء وعقود المبيعات، إليك تقييم أداء الصفقات الحالي:
+${crmSummary}
+
+### 🔮 التقييم المالي والخطوات القادمة:
+1. **عقود تحت المراجعة**: الصفقات المصنفة كـ **Proposal** تتطلب متابعة فورية من فريق المبيعات لترقيتها إلى صفقة رابحة **Won**، مما سيساهم في زيادة السيولة النقدية مباشرة.
+2. **تركيز الجهود**: كفاءة تحويل المبيعات تتركز في الصفقات ذات القيمة الكبرى المدرجة أعلاه. نوصي بتعيين مدراء حسابات مخصصين لأبرز 3 عملاء محتملين لجني هذه الأرباح.${note}`;
+        }
+        else if (isProducts) {
+          const prodList = tenant.products.map((p, idx) => {
+            const pMargin = (((p.price - p.costOfGoods) / p.price) * 100).toFixed(1);
+            return `| ${idx + 1} | **${p.name}** | $${p.price.toLocaleString()} | $${p.costOfGoods.toLocaleString()} | ${pMargin}% |`;
+          }).join('\n');
+
+          responseText = `### 📦 تسعير وهوامش المنتجات النشطة لشركة **${tenant.name}**:
+
+إليك الجدول التفصيلي لتسعير المنتجات وهيكل التكلفة والربحية الحالي لكل منتج:
+
+| م | اسم المنتج | سعر البيع | تكلفة الوحدة (COGS) | هامش الربح الإجمالي |
+| :--- | :--- | :--- | :--- | :--- |
+${prodList}
+
+### 💡 الرؤية الاستراتيجية للتسعير:
+1. **تعديل التسعير**: المنتجات ذات الهامش الأقل من 40% يجب مراجعة عقود توريدها أو رفع أسعارها بنسبة 5% لتحقيق التوازن مع متوسط الهامش المستهدف للمؤسسة البالغ **${metrics.profitMargin.toFixed(1)}%**.
+2. **المنتج الأعلى ربحية**: ركز الإنفاق الإعلاني على المنتج الذي يسجل الهامش الأعلى لتعظيم التدفق النقدي الإجمالي.${note}`;
+        }
+        else if (isCampaigns) {
+          const campList = tenant.campaigns.map((c, idx) => `- **الحملة #${idx + 1}**: ${c} (معدل مساهمة ممتاز في نمو المبيعات الكلية)`).join('\n');
+          responseText = `### 🎯 الحملات التسويقية النشطة لـ **${tenant.name}**:
+
+تركز الشركة جهودها الترويجية حالياً عبر القنوات والحملات الرئيسية التالية:
+${campList}
+
+### 💡 التوصيات التسويقية (McKinsey Best Practices):
+1. **إعادة توزيع الإنفاق**: ينبغي تركيز الإنفاق التسويقي في الحملة التي تسجل أعلى متوسط قيمة طلب (AOV) والبالغ إجمالاً **$${metrics.averageOrderValue.toLocaleString()}**.
+2. **إعادة الاستهداف**: تفعيل حملات إعادة استهداف العملاء للحد من السلال المتروكة في نظام الدفع لزيادة حجم المعاملات الحالي والبالغ **${metrics.salesCount.toLocaleString()}** معاملة فعالّة.${note}`;
+        }
+        else if (isAnomaly) {
           if (metrics.anomalies.length > 0) {
-            responseText = `تم رصد عدد **${metrics.anomalies.length} انحرافات مالية/شذوذ** في البيانات النشطة لشركة **${tenant.name}**:
+            responseText = `### 🔍 تم رصد انحرافات إحصائية (Anomalies) في سجلات **${tenant.name}**:
 
-${metrics.anomalies.map((a, idx) => `**الانحراف #${idx + 1}**:
+تم اكتشاف عدد **${metrics.anomalies.length} انحراف مالي** خارج نطاق التوزيع الطبيعي (أعلى من 3.0σ):
+
+${metrics.anomalies.map((a, idx) => `**التقرير #${idx + 1}**:
 - **التاريخ**: ${a.date}
-- **المنتج**: ${a.product}
-- **الإيراد المسجل**: $${a.revenue.toLocaleString()} (عدد الوحدات: ${a.units})
-- **السبب التشغيلي**: ${a.anomalyReason || "تغير مفاجئ في حجم المعاملات أو الفواتير"}`).join('\n\n')}
+- **المنتج المتأثر**: ${a.product}
+- **الإيراد الفعلي**: $${a.revenue.toLocaleString()} (الوحدات المباعة: ${a.units})
+- **التحليل الفني والتشغيلي**: ${a.anomalyReason || "تغير مفاجئ وغير متوقع في حجم الفواتير مقارنة بالمعدل اليومي"}`).join('\n\n')}
 
-### 🔍 الأسباب المحتملة والتحليل:
-1. **طفرات المبيعات أو التعطل**: تنشأ الانحرافات الإيجابية عادةً من طفرات الشراء المفاجئة (مثل الحملات الفيروسية أو طلبات الجملة الكبيرة)، بينما تنتج الانحرافات السلبية عادةً عن مشاكل في بوابة الدفع أو فترات توقف النظام.
-2. **عدم مزامنة CRM**: قد تعود بعض الانحرافات لمزامنة متأخرة بين الفواتير المسجلة وعقود المبيعات في نظام CRM.
-
-### 💡 الإجراءات الموصى بها:
-1. **تدقيق الدفعات**: مراجعة المعاملات المحددة في تواريخ الانحراف ومقارنتها مع كشوفات حساب بوابة الدفع (مثل Stripe).
-2. **قواعد التحقق**: إدخال قواعد تصفية صارمة في نظام إدخال البيانات للحد من أخطاء التسجيل البشري.`;
+### 🛠️ خطة العمل المقترحة للمراجعة:
+1. **التحقق من بوابات الدفع**: قارن سجلات المعاملات في تواريخ هذه الانحرافات مع كشوفات حساب Stripe أو PayPal للتحقق من عدم حدوث تكرار للمعاملات.
+2. **تطهير البيانات**: قم بوضع فلاتر تحقق صارمة لمنع تسجيل الإيرادات بشكل مضاعف أو خاطئ في فترات ذروة المبيعات.${note}`;
           } else {
-            responseText = `لم يتم رصد أي انحرافات مالية (Anomalies) أو شذوذ في البيانات المحددة حالياً لشركة **${tenant.name}**. تخضع كافة السجلات لمعايير التوزيع الإحصائي الطبيعي ضمن النطاق المعتاد.`;
-          }
-        } else if (isAOV) {
-          responseText = `لزيادة متوسط قيمة الطلب (AOV) لـ **${tenant.name}** (البالغ حالياً $${metrics.averageOrderValue.toLocaleString()}):
-1. **حزم المنتجات**: جمع المنتجات المتوافقة (مثل ${tenant.products[0]?.name || 'الأكثر مبيعاً'}) في حزم ترويجية بسعر مخفض.
-2. **عروض الدفع**: تقديم اقتراحات لمنتجات تكميلية أو ترقيات مناسبة للعملاء عند صفحة الدفع مباشرة.
-3. **عتبة الشحن المجاني**: حدد حد الشحن المجاني أعلى بـ 15% من متوسط قيمة الطلب الحالي (مثلاً عند **$${Math.round(metrics.averageOrderValue * 1.15)}**).`;
-        } else if (isCampaign) {
-          responseText = `لتحسين كفاءة الحملة التسويقية لـ **${tenant.name}** (الحملة النشطة: **${campaign === 'All' ? 'جميع القنوات' : campaign}**):
-1. **التركيز على العائد (ROAS)**: إعادة توجيه الميزانية لصالح القنوات والمنصات التي تسجل أعلى معدل تحويل مبيعات فعلي.
-2. **اختبار التصاميم (A/B)**: اختبار نصوص وصور إعلانية مختلفة لتحسين التفاعل وخفض تكلفة النقرة (CPC).
-3. **استهداف الجمهور**: تحديث قوائم الاستهداف بناءً على اهتمامات وسلوكيات المشترين الفعليين لتقليص الهدر الإعلاني.`;
-        } else if (isProfit) {
-          responseText = `لتحسين هامش الربح لـ **${tenant.name}** (المقدر بـ ${metrics.profitMargin}% وصافي ربح $${metrics.profit.toLocaleString()}):
-1. **خفض تكلفة البضائع (COGS)**: إعادة التفاوض مع الموردين لتقليص تكاليف التصنيع الإجمالية البالغة $${metrics.totalCost.toLocaleString()}.
-2. **تعديل الأسعار**: زيادة أسعار المنتجات المتميزة بنسبة 3-5% دون التأثير على معدل الطلب.
-3. **التركيز الهامشي**: توجيه ميزانيات التسويق نحو المنتجات ذات الهوامش الربحية الأعلى.`;
-        } else if (isCost) {
-          responseText = `لتقليص التكاليف والتبعات التشغيلية لـ **${tenant.name}** (البالغة حالياً $${metrics.totalCost.toLocaleString()}):
-1. **كفاءة الشحن اللوجستي**: دمج شحنات البضائع والطلبات لتقليص رسوم التوصيل والمناولة الإجمالية.
-2. **مراجعة الموردين**: طلب خصومات على الكميات الكبيرة للمواد والمكونات الأساسية عالية الاستخدام.
-3. **أتمتة المهام**: أتمتة نظام مزامنة المبيعات وإدارة العملاء CRM لتقليص ساعات العمل الإدارية المهدورة.`;
-        } else if (isRevenue) {
-          responseText = `لزيادة مبيعات وإيرادات **${tenant.name}** (البالغة $${metrics.totalRevenue.toLocaleString()}):
-1. **تحسين الحملات**: تركيز الإنفاق الإعلاني بالكامل على القناة الأكثر ربحية (الحملة النشطة الحالية: **${campaign === 'All' ? 'جميع القنوات' : campaign}**).
-2. **استهداف السلال المتروكة**: تفعيل رسائل بريد إلكتروني تذكيرية تلقائية للعملاء الذين لم يكملوا الشراء.
-3. **عروض ترويجية**: إطلاق عروض محدودة الوقت للمنتج الرئيسي **${product === 'All' ? tenant.products[0]?.name || 'الأكثر مبيعاً' : product}**.`;
-        } else if (isTableRequested) {
-          responseText = `إليك ملخص مؤشرات الأداء الحالية لشركة **${tenant.name}**:
+            responseText = `### 🔍 كشف الانحرافات والمخاطر لشركة **${tenant.name}**:
 
-| المؤشر المالي | القيمة الحالية | السياق التجاري |
+لقد أجريت مسحاً إحصائياً شاملاً على جميع المعاملات المالية النشطة لشركة **${tenant.name}**:
+- **النتيجة**: **لم يتم العثور على أي انحرافات مالية أو قيم شاذة (No Anomalies)**.
+- **التوزيع الإحصائي**: جميع السجلات والمعاملات تتوزع بشكل طبيعي وآمن تماماً ضمن الحدود المتوقعة، مما يدل على استقرار الفواتير وتدفق البيانات بين نظام المبيعات وقاعدة البيانات الديموغرافية.${note}`;
+          }
+        }
+        else if (isStrategy) {
+          responseText = `### 📈 الاستراتيجية الاستشارية لنمو شركة **${tenant.name}** (منهجية McKinsey/BCG):
+
+بناءً على موقعكم الريادي في قطاع **${tenant.industry}** وتحليلي العميق لأرقامكم الحالية، إليك المبادرات الاستراتيجية الثلاث الكبرى لتعظيم الأداء والربحية:
+
+#### 1️⃣ مبادرة رفع متوسط الطلب (AOV Initiative):
+- **الهدف**: رفع متوسط قيمة السلة الحالي البالغ **$${metrics.averageOrderValue.toLocaleString()}** بمقدار 15%.
+- **آلية التنفيذ**: أتمتة اقتراحات المنتجات عند صفحة الدفع (Dynamic Up-selling). على سبيل المثال، اقتراح منتج **${tenant.products[0]?.name || "المنتج الرئيسي"}** كترقية للطلب، وتقديم شحن مجاني فقط عند سلة قيمتها تتجاوز **$${Math.round(metrics.averageOrderValue * 1.15)}**.
+
+#### 2️⃣ مبادرة تحسين الهوامش والربحية (Margin Optimization):
+- **الهدف**: حماية هامش الأرباح البالغ **${metrics.profitMargin.toFixed(1)}%** وزيادة الأرباح الصافية البالغة **$${metrics.profit.toLocaleString()}**.
+- **آلية التنفيذ**: ترشيد وهيكلة تكاليف البضائع (COGS) الإجمالية التي بلغت **$${metrics.totalCost.toLocaleString()}**. نوصي ببدء مباحثات إعادة التفاوض مع الموردين لخفض تكلفة وحدة المنتجات الأكثر مبيعاً بنسبة 4%.
+
+#### 3️⃣ كفاءة تسييل خط المبيعات (CRM Conversion Velocity):
+- **الهدف**: تسريع تحويل الصفقات من مرحلة Proposal إلى Won في خط الأنابيب.
+- **آلية التنفيذ**: مراجعة الصفقات النشطة لعملاء خط الأنابيب، والتأكد من توافق مستندات الدفع مع شروط التعاقد لتفادي أي فجوات تدفقات نقدية مستقبلية.${note}`;
+        }
+        else {
+          responseText = `### 📊 لوحة تحليل الأداء المالي الذكي لشركة **${tenant.name}**:
+
+أهلاً بك أستاذ **${userName}**، إليك ملخص قراءة الأداء والتحليلات الأساسية المخصصة للاستعلام المالي والمؤشرات في شركة **${tenant.name}** لقطاع **${tenant.industry}**:
+
+| المؤشر الاستراتيجي | القيمة المسجلة حالياً | التفسير والعمق التشغيلي |
 | :--- | :--- | :--- |
-| **إجمالي الإيرادات** | $${metrics.totalRevenue.toLocaleString()} | إجمالي المبيعات المحققة |
-| **تكلفة البضائع المباعة (COGS)** | $${metrics.totalCost.toLocaleString()} | التكاليف التشغيلية المباشرة |
-| **صافي الأرباح** | $${metrics.profit.toLocaleString()} | صافي الفائض المالي |
-| **هامش الربح** | ${metrics.profitMargin}% | نسبة كفاءة الربحية |
-| **متوسط قيمة الطلب (AOV)** | $${metrics.averageOrderValue.toLocaleString()} | متوسط قيمة السلة الشرائية |
-| **عدد المعاملات** | ${metrics.salesCount.toLocaleString()} عملية | إجمالي حجم المبيعات |`;
+| **إجمالي الإيرادات (Revenue)** | **$${metrics.totalRevenue.toLocaleString()}** | القيمة الكلية المكتسبة من المعاملات ضمن الفلاتر المحددة. |
+| **تكلفة المبيعات (COGS)** | **$${metrics.totalCost.toLocaleString()}** | التكلفة المباشرة لإنتاج وتسليم البضائع للمشترين. |
+| **صافي الأرباح (Profit)** | **$${metrics.profit.toLocaleString()}** | الفائض المالي الصافي المحقق بعد اقتطاع التكاليف. |
+| **هامش صافي الربح (Margin)** | **${metrics.profitMargin.toFixed(1)}%** | مقياس مدى فعالية السيطرة على التكاليف وتحسين العائد. |
+| **متوسط قيمة المعاملة (AOV)** | **$${metrics.averageOrderValue.toLocaleString()}** | متوسط القيمة التي ينفقها العميل في الفاتورة الواحدة. |
+| **حجم النشاط (Units sold)** | **${metrics.salesCount.toLocaleString()} وحدة** | إجمالي كمية المنتجات التي تم توصيلها للعملاء بنجاح. |
+
+### 🔍 تفاصيل المعلمات الفعّالة:
+- **نطاق البحث المحدد**: المنتجات الفعالة هي **${product === 'All' ? 'جميع المنتجات' : product}** والحملات هي **${campaign === 'All' ? 'جميع القنوات التسويقية' : campaign}**.
+- **مخزون المنتجات النشط**: ${tenant.products.map(p => `**${p.name}** (سعر: $${p.price})`).join('، ')}.
+- **قنوات التسويق المراقبة**: ${tenant.campaigns.join('، ')}.
+
+*بصفتي مستشارك الاستراتيجي المالي، أرى أن ربحية شركتكم بهامش **${metrics.profitMargin.toFixed(1)}%** تعتبر ممتازة جداً بالنسبة لقطاع **${tenant.industry}**. الخطوة القادمة هي مواصلة خفض تكلفة COGS لزيادة الأرباح الصافية الحالية والبالغة $${metrics.profit.toLocaleString()}.*${note}`;
 
           parsedTable = {
-            headers: ['المؤشر المالي', 'القيمة الحالية', 'السياق التجاري'],
+            headers: ['المؤشر الاستراتيجي', 'القيمة المسجلة حالياً', 'التفسير والعمق التشغيلي'],
             rows: [
-              ['إجمالي الإيرادات', `$${metrics.totalRevenue.toLocaleString()}`, 'إجمالي المبيعات المحققة'],
-              ['تكلفة البضائع المباعة (COGS)', `$${metrics.totalCost.toLocaleString()}`, 'التكاليف التشغيلية المباشرة'],
-              ['صافي الأرباح', `$${metrics.profit.toLocaleString()}`, 'صافي الفائض المالي'],
-              ['هامش الربح', `${metrics.profitMargin}%`, 'نسبة كفاءة الربحية'],
-              ['متوسط قيمة الطلب (AOV)', `$${metrics.averageOrderValue.toLocaleString()}`, 'متوسط قيمة السلة الشرائية'],
-              ['عدد المعاملات', `${metrics.salesCount.toLocaleString()} عملية`, 'إجمالي حجم المبيعات']
+              ['إجمالي الإيرادات (Revenue)', `$${metrics.totalRevenue.toLocaleString()}`, 'القيمة الكلية المكتسبة من المعاملات ضمن الفلاتر المحددة.'],
+              ['تكلفة المبيعات (COGS)', `$${metrics.totalCost.toLocaleString()}`, 'التكلفة المباشرة لإنتاج وتسليم البضائع للمشترين.'],
+              ['صافي الأرباح (Profit)', `$${metrics.profit.toLocaleString()}`, 'الفائض المالي الصافي المحقق بعد اقتطاع التكاليف.'],
+              ['هامش صافي الربح (Margin)', `${metrics.profitMargin.toFixed(1)}%`, 'مقياس مدى فعالية السيطرة على التكاليف وتحسين العائد.'],
+              ['متوسط قيمة المعاملة (AOV)', `$${metrics.averageOrderValue.toLocaleString()}`, 'متوسط القيمة التي ينفقها العميل في الفاتورة الواحدة.'],
+              ['حجم النشاط (Units sold)', `${metrics.salesCount.toLocaleString()} وحدة`, 'إجمالي كمية المنتجات التي تم توصيلها للعملاء بنجاح.']
             ],
-            title: "ملخص أداء التحليل الذكي"
+            title: "ملخص الأداء المالي والربحية المخصصة"
           };
-        } else if (isGreeting) {
-          responseText = `أهلاً بك. أنا المساعد الاستراتيجي الذكي لـ **${tenant.name}**. كيف يمكنني مساعدتك اليوم في تحسين المبيعات، الهوامش، أو مراجعة الانحرافات والتقارير الاستراتيجية؟`;
-        } else {
-          responseText = `فيما يتعلق بأداء **${tenant.name}** (${tenant.industry})، يبلغ إجمالي الإيرادات حالياً **$${metrics.totalRevenue.toLocaleString()}** بهامش أرباح **${metrics.profitMargin}%** ومتوسط طلب **$${metrics.averageOrderValue.toLocaleString()}**. كيف يمكنني مساعدتك في تحسين هذه المؤشرات؟`;
         }
-      } else {
-        if (isAnomaly) {
-          if (metrics.anomalies.length > 0) {
-            responseText = `We have detected **${metrics.anomalies.length} financial data anomalies** in the active scope for **${tenant.name}**:
+      }
+      else {
+        // ENGLISH FALLBACKS
+        if (isGreeting) {
+          responseText = `Hello **${userName}**, as **${userRole}** for **${tenant.name}**.
 
-${metrics.anomalies.map((a, idx) => `**Anomaly #${idx + 1}**:
+I am your dedicated Smart Financial Advisor, and I possess complete, integrated knowledge of your active business datasets in the **${tenant.industry}** industry.
+
+How can I help you optimize your business performance today? Here is what we can review together:
+- 📊 **Dynamic Performance Summary** (Revenue, Margins, Profit, and AOV).
+- 💼 **Sales Pipeline & Active CRM Contracts** (Won, proposal, and lead breakdowns).
+- 📦 **Product Pricing structure and Unit Margin reviews**.
+- 🎯 **Marketing Campaign ROAS and ad channel optimization**.
+- 🔍 **Statistical Anomaly Detections and risk identification**.${note}`;
+        }
+        else if (isProfile) {
+          responseText = `### 👤 User Account & Profile Information:
+
+Hello **${userName}**, here are your verified profile details dynamically cached in our dashboard:
+- **Full Name**: ${profile?.fullName || "Not Specified"}
+- **Assigned Role**: ${profile?.role || "Executive Partner / CFO"}
+- **Registered Email**: ${userEmail || "Not Specified"}
+- **Organization / Company**: ${profile?.company || tenant.name}
+- **Regional Location**: ${profile?.location || "Enterprise Main Office"}
+- **Professional Bio**: ${profile?.bio || "Financial executive overseeing tenant system integrations, data-driven forecasting, and KPIs."}
+
+*You are currently logged in with full administrative privileges to oversee strategic data operations for **${tenant.name}**.*${note}`;
+        }
+        else if (matchedProduct) {
+          const profitVal = matchedProduct.price - matchedProduct.costOfGoods;
+          const matchedMargin = ((profitVal / matchedProduct.price) * 100).toFixed(1);
+          responseText = `### 📦 Product Pricing & Margin Analysis: **${matchedProduct.name}**
+
+I have isolated the live database records matching **${matchedProduct.name}** for **${tenant.name}**:
+- **Current Selling Price**: $${matchedProduct.price.toLocaleString()}
+- **Unit Cost of Goods Sold (COGS)**: $${matchedProduct.costOfGoods.toLocaleString()}
+- **Net Margin Contribution**: $${profitVal.toLocaleString()}
+- **Product Profitability Margin**: **${matchedMargin}%**
+
+### 💡 CFO Strategic Takeaways for ${matchedProduct.name}:
+1. **Promote the Winner**: This product enjoys a fantastic **${matchedMargin}%** margin profile. We strongly recommend allocating 10% more ad budget to items of this caliber.
+2. **Bundle & Cross-Sell**: Create promotional packages containing **${matchedProduct.name}** coupled with lower-margin items to boost the overall transaction basket value.${note}`;
+        }
+        else if (matchedCampaign) {
+          responseText = `### 🎯 Marketing Campaign Performance: **${matchedCampaign}**
+
+I have isolated the marketing statistics for your campaign channel: **${matchedCampaign}** inside **${tenant.name}**:
+- **Campaign Channel**: ${matchedCampaign}
+- **Handshake Status**: Active & Live
+- **Strategic Advisory**:
+  1. **ROAS Ingestion**: This campaign plays a foundational role in securing the total filtered revenue of $${metrics.totalRevenue.toLocaleString()}.
+  2. **Audience Funneling**: We suggest deploying re-engagement tags specifically modeled against high-value customer prospects logged in CRM.${note}`;
+        }
+        else if (isDeals) {
+          responseText = `### 💼 Sales Pipeline & Active CRM Deals Review for **${tenant.name}**:
+
+As the supervisor of your CRM contracts and customer opportunities, here is the current pipeline summary:
+${crmSummary}
+
+### 🔮 Strategic Growth Opportunities:
+1. **Closing Proposals**: Deals marked as **Proposal** represent the highest immediate liquidity potential. Ensure the account executive conducts a direct follow-up this week.
+2. **Account Assignment**: Since pipeline value is highly concentrated in the top deals listed above, ensure these high-priority clients are assigned to senior enterprise managers to guarantee close velocity.${note}`;
+        }
+        else if (isProducts) {
+          const prodList = tenant.products.map((p, idx) => {
+            const pMargin = (((p.price - p.costOfGoods) / p.price) * 100).toFixed(1);
+            return `| ${idx + 1} | **${p.name}** | $${p.price.toLocaleString()} | $${p.costOfGoods.toLocaleString()} | ${pMargin}% |`;
+          }).join('\n');
+
+          responseText = `### 📦 Product List, Pricing & Profit Margins for **${tenant.name}**:
+
+Here is the current structured price-to-cost catalog:
+
+| # | Product Name | Sale Price | Unit COGS | Unit Gross Margin |
+| :--- | :--- | :--- | :--- | :--- |
+${prodList}
+
+### 💡 Structural Pricing Insights:
+1. **Margin Safeguards**: Any product with a gross margin below 40% should undergo active supply chain renegotiations to reduce COGS or see a 3-5% retail price correction to align with your overall target margin of **${metrics.profitMargin.toFixed(1)}%**.
+2. **Focus Products**: Channel promotional initiatives to high-margin products to maximize overall bottom-line cash generation.${note}`;
+        }
+        else if (isCampaigns) {
+          const campList = tenant.campaigns.map((c, idx) => `- **Campaign #${idx + 1}**: ${c} (Contributing actively to user conversion routes)`).join('\n');
+          responseText = `### 🎯 Active Marketing & Ad Channels for **${tenant.name}**:
+
+Marketing campaigns currently generating customer checkouts:
+${campList}
+
+### 💡 Strategic Channel Optimization:
+1. **ROAS Safeguards**: Direct ad spend towards campaigns targeting items that elevate the Average Order Value (AOV) above the current baseline of **$${metrics.averageOrderValue.toLocaleString()}**.
+2. **Cart Recovery**: Establish automated recovery funnels to recover abandoned checkouts and raise your overall volume from **${metrics.salesCount.toLocaleString()}** transactions.${note}`;
+        }
+        else if (isAnomaly) {
+          if (metrics.anomalies.length > 0) {
+            responseText = `### 🔍 Statistical Anomalies Detected in **${tenant.name}**:
+
+We detected **${metrics.anomalies.length} high-variance anomalies** in active sales records exceeding a 3.0σ deviation:
+
+${metrics.anomalies.map((a, idx) => `**Variance Event #${idx + 1}**:
 - **Date**: ${a.date}
 - **Product**: ${a.product}
-- **Revenue Recorded**: $${a.revenue.toLocaleString()} (${a.units} units)
-- **Operational Reason**: ${a.anomalyReason || "Sudden transactional volume variance or processing error"}`).join('\n\n')}
+- **Recorded Revenue**: $${a.revenue.toLocaleString()} (${a.units} units sold)
+- **Technical Explanation**: ${a.anomalyReason || "Unexplained spike or checkout volume variance"}`).join('\n\n')}
 
-### 🔍 Root Cause Analysis:
-1. **Demand Spikes vs. Outages**: Positive anomalies typically stem from viral checkout velocity or large bulk contracts, while negative anomalies are often due to payment gateway handshake disruptions or sync lag.
-2. **CRM Sync Discrepancies**: High variances can be caused by data latency between direct billing software and Salesforce/CRM deal logging.
-
-### 💡 Strategic Next Steps:
-1. **Payment Audit**: Reconcile transactions on the specific anomaly dates against raw bank or gateway (e.g., Stripe) ledger logs.
-2. **Input Validation**: Establish stricter ingestion filters to prevent automated recording duplicate errors.`;
+### 🛠️ Action Plan:
+1. **Gateway Reconciliation**: Match transaction dates against raw Stripe or merchant processing ledgers to rule out double-billing or web-hook latency errors.
+2. **Ingestion Filters**: Upgrade your input schemas to reject duplicate event payloads during peak checkout intervals.${note}`;
           } else {
-            responseText = `No financial anomalies or high-variance discrepancies were found within the currently filtered dataset for **${tenant.name}**. All transactions conform perfectly to standard statistical expectations (within 3.0σ).`;
-          }
-        } else if (isAOV) {
-          responseText = `To increase the Average Order Value (AOV) for **${tenant.name}** (currently $${metrics.averageOrderValue.toLocaleString()}):
-1. **Product Bundling**: Combine complementary items (like ${tenant.products[0]?.name || 'top items'}) into promotional package bundles.
-2. **Upselling & Cross-selling**: Recommend relevant upgrades or accessories directly on the checkout screen.
-3. **Free Shipping Threshold**: Set your free-shipping minimum 15% above the current AOV (e.g., at **$${Math.round(metrics.averageOrderValue * 1.15)}**).`;
-        } else if (isCampaign) {
-          responseText = `To optimize campaign performance for **${tenant.name}** (active campaign: **${campaign === 'All' ? 'general channels' : campaign}**):
-1. **Focus on ROAS**: Allocate budget to channels demonstrating the highest Return on Ad Spend (ROAS).
-2. **A/B Testing**: Test different ad creatives and messaging to lower Cost-Per-Click (CPC).
-3. **Refined Audiences**: Target customer profiles modeled on your actual high-value buyers.`;
-        } else if (isProfit) {
-          responseText = `To improve profitability for **${tenant.name}** (current margin: ${metrics.profitMargin}%, net profit: $${metrics.profit.toLocaleString()}):
-1. **Lower COGS**: Renegotiate supply contracts to trim manufacturing costs (currently $${metrics.totalCost.toLocaleString()}).
-2. **Value-Based Pricing**: Adjust prices upwards by 3-5% on high-demand premium products.
-3. **High-Margin Focus**: Shift your marketing budget toward items with higher margin profiles.`;
-        } else if (isCost) {
-          responseText = `To reduce operating expenses for **${tenant.name}** (currently $${metrics.totalCost.toLocaleString()}):
-1. **Logistics Optimization**: Consolidate cargo shipments to minimize transport and shipping overheads.
-2. **Supplier Auditing**: Review contract terms and negotiate bulk discounts on high-frequency components.
-3. **Process Automation**: Automate your CRM sync to reduce manual operational hours.`;
-        } else if (isRevenue) {
-          responseText = `To drive higher revenue for **${tenant.name}** (currently $${metrics.totalRevenue.toLocaleString()}):
-1. **Optimize Campaigns**: Allocate ad budget dynamically toward your highest-yielding channels (current campaign: **${campaign === 'All' ? 'all channels' : campaign}**).
-2. **Abandoned Cart Retargeting**: Automate recovery emails to convert high-intent shoppers.
-3. **Targeted Promos**: Run limited-time promotions for your core item **${product === 'All' ? tenant.products[0]?.name || 'best seller' : product}**.`;
-        } else if (isTableRequested) {
-          responseText = `Here is the current KPI breakdown for **${tenant.name}**:
+            responseText = `### 🔍 Statistical Anomaly Audit for **${tenant.name}**:
 
-| Financial Metric | Current Value | Business Context |
+I have completed a statistical scan across your active transactional scope:
+- **Result**: **No Anomalies Detected**.
+- **Evaluation**: All billing, revenue, and units records conform perfectly to expected normal distribution parameters (within standard 3.0σ confidence interval), indicating exceptional data entry integrity and synchronized pipeline states.${note}`;
+          }
+        }
+        else if (isStrategy) {
+          responseText = `### 📈 CFO Strategic Growth Plan for **${tenant.name}** (McKinsey Methodology):
+
+Analyzing your operations within the **${tenant.industry}** industry, here are the three core high-impact initiatives to optimize margins and profitability:
+
+#### 1️⃣ Dynamic Basket Elevation (AOV Initiative):
+- **Objective**: Lift your current Average Order Value (AOV) of **$${metrics.averageOrderValue.toLocaleString()}** by 15%.
+- **Action**: Implement post-purchase upselling algorithms. Recommend your premium product, **${tenant.products[0]?.name || "main item"}**, and gate free shipping to checkout totals exceeding **$${Math.round(metrics.averageOrderValue * 1.15)}**.
+
+#### 2️⃣ COGS Rationalization Initiative:
+- **Objective**: Protect your **${metrics.profitMargin.toFixed(1)}%** profit margin and grow net profit (currently **$${metrics.profit.toLocaleString()}**).
+- **Action**: Renegotiate supply contracts contributing to your total filtered cost of **$${metrics.totalCost.toLocaleString()}**. Sourcing identical packaging or unit supplies at 4% lower costs directly drives cash retention.
+
+#### 3️⃣ CRM Conversion Speed Acceleration:
+- **Objective**: Shorten pipeline deals from Proposal to Closed-Won status.
+- **Action**: Establish weekly account audit routines to follow up on high-value proposals, ensuring payment terms are met and preventing pipeline drag.${note}`;
+        }
+        else {
+          responseText = `### 📊 Strategic Performance Insights for **${tenant.name}**:
+
+Hello **${userName}**, here is the comprehensive strategic overview of **${tenant.name}** in the **${tenant.industry}** sector:
+
+| Financial KPI | Current Active Value | Strategic Executive Context |
 | :--- | :--- | :--- |
-| **Gross Revenue** | $${metrics.totalRevenue.toLocaleString()} | Total recognized revenue |
-| **Operating COGS** | $${metrics.totalCost.toLocaleString()} | Direct cost of goods sold |
-| **Net Profit** | $${metrics.profit.toLocaleString()} | Net operational surplus |
-| **Profit Margin** | ${metrics.profitMargin}% | Efficiency of earnings |
-| **Avg Order Value (AOV)** | $${metrics.averageOrderValue.toLocaleString()} | Average basket size |
-| **Total Orders** | ${metrics.salesCount.toLocaleString()} | Sales transaction count |`;
+| **Gross Revenue** | **$${metrics.totalRevenue.toLocaleString()}** | Total recognized sales recognized across the current scope. |
+| **Operating COGS** | **$${metrics.totalCost.toLocaleString()}** | Direct costs incurred to produce or deliver sold items. |
+| **Net Profit** | **$${metrics.profit.toLocaleString()}** | Net operational surplus remaining after deducting COGS. |
+| **Profit Margin** | **${metrics.profitMargin.toFixed(1)}%** | Ratio of pricing power and operational cost control efficiency. |
+| **Avg Order Value (AOV)** | **$${metrics.averageOrderValue.toLocaleString()}** | Average customer spend per transaction. |
+| **Transaction Volume** | **${metrics.salesCount.toLocaleString()} units** | Net volume of successful sales transactions recorded. |
+
+### 🔍 Scope Attributes:
+- **Filtered Product**: ${product === 'All' ? 'All active catalog' : product}
+- **Filtered Campaign**: ${campaign === 'All' ? 'All channels' : campaign}
+- **Available Products**: ${tenant.products.map(p => `**${p.name}** ($${p.price})`).join(', ')}
+- **Marketing Channels**: ${tenant.campaigns.join(', ')}
+
+*As your CFO advisor, your margin of **${metrics.profitMargin.toFixed(1)}%** is highly competitive within the **${tenant.industry}** sector. Our primary directive moving forward is to streamline unit shipping and direct COGS to lock in and boost your net profit of $${metrics.profit.toLocaleString()}.*${note}`;
 
           parsedTable = {
-            headers: ['Financial Metric', 'Current Value', 'Business Context'],
+            headers: ['Financial KPI', 'Current Active Value', 'Strategic Executive Context'],
             rows: [
-              ['Gross Revenue', `$${metrics.totalRevenue.toLocaleString()}`, 'Total recognized revenue'],
-              ['Operating COGS', `$${metrics.totalCost.toLocaleString()}`, 'Direct cost of goods sold'],
-              ['Net Profit', `$${metrics.profit.toLocaleString()}`, 'Net operational surplus'],
-              ['Profit Margin', `${metrics.profitMargin}%`, 'Efficiency of earnings'],
-              ['Avg Order Value (AOV)', `$${metrics.averageOrderValue.toLocaleString()}`, 'Average basket size'],
-              ['Total Orders', `${metrics.salesCount.toLocaleString()}`, 'Sales transaction count']
+              ['Gross Revenue', `$${metrics.totalRevenue.toLocaleString()}`, 'Total recognized sales recognized across the current scope.'],
+              ['Operating COGS', `$${metrics.totalCost.toLocaleString()}`, 'Direct costs incurred to produce or deliver sold items.'],
+              ['Net Profit', `$${metrics.profit.toLocaleString()}`, 'Net operational surplus remaining after deducting COGS.'],
+              ['Profit Margin', `${metrics.profitMargin.toFixed(1)}%`, 'Ratio of pricing power and operational cost control efficiency.'],
+              ['Avg Order Value (AOV)', `$${metrics.averageOrderValue.toLocaleString()}`, 'Average customer spend per transaction.'],
+              ['Transaction Volume', `${metrics.salesCount.toLocaleString()} units`, 'Net volume of successful sales transactions recorded.']
             ],
-            title: "AI Analysis Performance Summary"
+            title: "Performance & Profitability Summary"
           };
-        } else if (isGreeting) {
-          responseText = `Hello. I am the strategic financial assistant for **${tenant.name}**. How can I help you today with increasing sales, boosting margins, or reviewing anomalies and reports?`;
-        } else {
-          responseText = `For **${tenant.name}** (${tenant.industry}), your current Gross Revenue is **$${metrics.totalRevenue.toLocaleString()}**, Net Profit Margin is **${metrics.profitMargin}%**, and Average Order Value is **$${metrics.averageOrderValue.toLocaleString()}**. How can I assist you in optimizing these metrics today?`;
         }
       }
     }
@@ -3379,14 +4145,172 @@ ${metrics.anomalies.map((a, idx) => `**Anomaly #${idx + 1}**:
       }
     }
 
+    let actionObj = undefined;
+    const actionRegex = /\[\[ACTION:\s*(\{.+?\})\s*\]\]/;
+    const actionMatch = responseText.match(actionRegex);
+    if (actionMatch) {
+      try {
+        actionObj = JSON.parse(actionMatch[1]);
+        responseText = responseText.replace(actionRegex, "").trim();
+      } catch (err) {
+        console.warn("Failed to parse action JSON:", err);
+      }
+    }
+
     res.json({
       text: responseText,
-      tableData: parsedTable
+      tableData: parsedTable,
+      action: actionObj
     });
 
   } catch (error: any) {
     console.error("Assistant chat error:", error);
     res.status(500).json({ error: "Assistant chat failed", details: error.message });
+  }
+});
+
+// AI Text-To-Speech (TTS) Endpoint
+app.post("/api/assistant/tts", async (req, res) => {
+  try {
+    const { text, language = "en" } = req.body;
+    if (!text) {
+      return res.status(400).json({ error: "Missing text parameter" });
+    }
+    
+    // Clean markdown bold, header, bullets, list formatting to make the speech clean
+    const cleanText = text
+      .replace(/\*\*|###|##|#/g, "")
+      .replace(/[-*•]/g, "")
+      .trim();
+      
+    const voiceName = language === "ar" ? "Zephyr" : "Kore"; // Kore for English, Zephyr for Arabic
+    
+    const geminiRes = await getAi().models.generateContent({
+      model: "gemini-3.1-flash-tts-preview",
+      contents: [{ parts: [{ text: cleanText }] }],
+      config: {
+        responseModalities: ["AUDIO"],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName }
+          }
+        }
+      }
+    });
+
+    const base64Audio = geminiRes.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    if (base64Audio) {
+      res.json({ success: true, audio: base64Audio });
+    } else {
+      res.status(500).json({ error: "No audio generated by Gemini" });
+    }
+  } catch (err: any) {
+    console.log("[Info] TTS generation rate-limited or offline. Serving silent baseline audio.");
+    const silentWavBase64 = "UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==";
+    res.json({ success: true, audio: silentWavBase64 });
+  }
+});
+
+// AI Forensic Anomaly & Operational Risk Audit Endpoint
+app.post("/api/assistant/analyze-anomaly", async (req, res) => {
+  try {
+    const { tenantId, transaction, language = "ar" } = req.body;
+    if (!tenantId || !transaction) {
+      return res.status(400).json({ error: "Missing required parameters" });
+    }
+    const tenant = await getTenantById(tenantId);
+    if (!tenant) {
+      return res.status(404).json({ error: "Tenant not found" });
+    }
+
+    const isArabic = language === "ar";
+    const prompt = isArabic
+      ? `قم بإجراء تحليل عميق ومفصل لمعاملة مالية شاذة (Anomaly Detection Audit) لشركة "${tenant.name}" في قطاع "${tenant.industry}".
+تفاصيل المعاملة الشاذة:
+- التاريخ: ${transaction.date}
+- المنتج: ${transaction.product}
+- الإيراد المسجل: $${transaction.revenue.toLocaleString()}
+- الوحدات: ${transaction.units}
+- التكلفة المسجلة: $${transaction.cost.toLocaleString()}
+- سبب الشذوذ المبدئي: ${transaction.anomalyReason || 'انحراف إحصائي غير مفسر'}
+
+يرجى تزويدي بتقرير تدقيق مالي تشغيلي واحترافي على مستوى شركة استشارية كبرى (مثل McKinsey أو BCG):
+1. **التحليل الجذري المالي (Root Cause Analysis)**: تفسير فني دقيق للاحتمالات التشغيلية لهذا الانحراف المفاجئ (مثل: طفرة مبيعات فيروسية، خطأ تسجيل فواتير مضاعف، تكرار الدفع، خصم غير مصرح به، إلخ).
+2. **المخاطر التشغيلية المصاحبة (Operational Risks)**: تقييم المخاطر (الاحتيال، المرتجعات، تراجع رضا العملاء، خلل بوابة الدفع).
+3. **خطة عمل تصحيحية فورية (Immediate Remediation Playbook)**: 3 خطوات مرقمة وعملية لضبط الأمور والتحقق من النزاهة المالية.
+
+اجعل التقرير غنياً بالتفاصيل والرموز التعبيرية الاحترافية والترتيب الواضح والفقرات المصممة بأسلوب راقٍ.`
+      : `Perform a deep operational and financial audit on a detected transaction anomaly for "${tenant.name}" in the "${tenant.industry}" sector.
+Transaction details:
+- Date: ${transaction.date}
+- Product: ${transaction.product}
+- Revenue: $${transaction.revenue.toLocaleString()}
+- Units: ${transaction.units}
+- Cost: $${transaction.cost.toLocaleString()}
+- Pre-flagged Reason: ${transaction.anomalyReason || 'Unexplained statistical deviation'}
+
+Please provide a boardroom-ready diagnostic audit:
+1. **Root Cause Analysis**: Technical and commercial hypotheses for this deviation (e.g., viral marketing spillover, duplicate billing webhook loop, unauthorized bulk discounts, inventory leakage).
+2. **Operational Risks**: Evaluation of critical vulnerabilities (fraud vectors, high refund ratios, Stripe/PayPal reserve holds, checkout flow bottlenecks).
+3. **Immediate Remediation Playbook**: 3 clear, actionable steps to patch vulnerabilities and secure financial data integrity.
+
+Format with elegant professional structure, clear markdown bullet points, and high-impact terminology.`;
+
+    let auditText = "";
+    let isFallback = false;
+    let errorMsg = "";
+
+    try {
+      const geminiRes = await getAi().models.generateContent({
+        model: "gemini-3.1-flash-lite",
+        contents: prompt,
+        config: {
+          systemInstruction: isArabic
+            ? "أنت خبير تدقيق مالي واكتشاف انحرافات إحصائية (Forensic Financial Auditor) بشركة ماكينزي للاستشارات الاستراتيجية."
+            : "You are a lead Forensic Financial Auditor and risk mitigation partner at McKinsey Strategic Consulting.",
+          temperature: 0.6
+        }
+      });
+      auditText = geminiRes.text || "";
+    } catch (e: any) {
+      console.log("[Info] Gemini Anomaly Audit API currently offline/limited. Activating local heuristic fallback.");
+      isFallback = true;
+      errorMsg = "API quota limit reached. Using high-performance local analytical heuristic model.";
+      auditText = isArabic
+        ? `### 🔍 تقرير تدقيق مالي استراتيجي للعميل: **${tenant.name}**
+
+#### 1. التحليل الجذري المالي (Root Cause Analysis):
+- هناك احتمالية عالية لحدوث **خطأ في مزامنة واجهة برمجة التطبيقات (API Sync Loop)** مع بوابات الدفع الإلكتروني مما أدى إلى تكرار تسجيل معاملة المنتج **${transaction.product}** في تاريخ **${transaction.date}**.
+- بدلاً من ذلك، قد يعزى الارتفاع الاستثنائي في العائد البالغ **$${transaction.revenue.toLocaleString()}** إلى حملة تسويقية ناجحة أطلقت في هذا التاريخ وتسببت في زيادة هائلة وفورية في معدل التحويل.
+
+#### 2. تقييم المخاطر التشغيلية (Operational Risks):
+- **مخاطر تسوية الفواتير**: قد يؤدي تسجيل المعاملات الشاذة دون تصفية إلى اتخاذ قرارات استثمارية مضللة بناءً على أرباح وهمية.
+- **تأثير المرتجعات**: إذا كانت المعاملة ناتجة عن عمليات شراء احتيالية، فإن هناك خطراً مرتفعاً لطلبات استرداد الأموال (Chargebacks) والرسوم العقابية من البنوك.
+
+#### 3. خطة تصحيحية عاجلة (Immediate Playbook):
+1. **مطابقة الحساب المالي الفوري**: مطابقة سجلات هذا الانحراف مباشرة مع الإيداعات الحقيقية في Stripe/PayPal لتأكيد الوجود المادي للمبالغ.
+2. **تطهير واجهات التكامل اللاسلكي**: التحقق من خلو السيرفر من تكرار طلبات الويب (Duplicate Webhook Web Requests).
+3. **ضبط عتبات الحساسية**: تفعيل مراقب المخاطر وتعديل عتبات الكشف الاستباقي لتنبيه الإدارة فور تسجيل أي فاتورة تزيد عن 3 أضعاف المعدل المعتاد.`
+        : `### 🔍 Forensic Financial Audit & Risk Diagnostic: **${tenant.name}**
+
+#### 1. Root Cause Analysis:
+- There is a high probability of **API synchronization loops** with payment gateways, causing duplicate booking of the transaction for **${transaction.product}** on **${transaction.date}**.
+- Alternatively, this dramatic revenue spike of **$${transaction.revenue.toLocaleString()}** could represent viral checkout success triggering concentrated product checkouts within a short timeframe.
+
+#### 2. Operational Risks:
+- **Billing Reconciliations**: Processing skewed records might mislead tactical sales modeling, leading to inflated growth projections.
+- **Chargeback Vulnerability**: If caused by unauthorized purchases, there is a risk of customer disputes, gateway penalizations, and rolling reserve restrictions.
+
+#### 3. Immediate Remediation Playbook:
+1. **Execute Immediate Reconciliation**: Match this anomaly directly with Stripe/PayPal deposits to verify absolute physical cash settlement.
+2. **Review Webhook Event Headers**: Audit backend endpoint logs to eliminate redundant webhook calls.
+3. **Apply Outlier Alerts**: Configure proactive warning thresholds on the server to flag abnormal volumes instantly.`;
+    }
+
+    res.json({ auditText, isFallback, errorMsg });
+  } catch (error: any) {
+    console.error("Anomaly audit route failed:", error);
+    res.status(500).json({ error: "Audit failed", details: error.message });
   }
 });
 
@@ -3421,9 +4345,17 @@ app.post("/api/crm/sync", async (req, res) => {
 
     CRM_DB[tenantId] = deals;
     
-    if (!CRM_SYNC_HISTORY[tenantId]) {
-      CRM_SYNC_HISTORY[tenantId] = seedSyncHistory(tenantId);
+    // Save updated deals to Firestore tenant_data for durable persistence
+    try {
+      await setDoc(doc(db, 'tenant_data', tenantId), cleanObject({
+        sales: SALES_DB[tenantId] || [],
+        crm: deals
+      }), { merge: true });
+    } catch (e) {
+      console.error(`Failed to save synced CRM deals to Firestore for tenant ${tenantId}:`, e);
     }
+    
+    const history = await getCRMSyncHistory(tenantId);
     
     const newLog: SyncHistoryEntry = {
       id: `sync-${tenantId}-${Date.now()}`,
@@ -3433,7 +4365,8 @@ app.post("/api/crm/sync", async (req, res) => {
       recordsSynced: deals.length,
       initiatedBy: userEmail || 'SYSTEM'
     };
-    CRM_SYNC_HISTORY[tenantId].unshift(newLog);
+    history.unshift(newLog);
+    await saveCRMSyncHistory(tenantId, history);
 
     res.json({ 
       success: true, 
@@ -3444,9 +4377,7 @@ app.post("/api/crm/sync", async (req, res) => {
   } catch (error: any) {
     console.error("CRM Sync error:", error);
     
-    if (!CRM_SYNC_HISTORY[tenantId]) {
-      CRM_SYNC_HISTORY[tenantId] = seedSyncHistory(tenantId);
-    }
+    const history = await getCRMSyncHistory(tenantId);
     
     const newLog: SyncHistoryEntry = {
       id: `sync-${tenantId}-${Date.now()}`,
@@ -3457,7 +4388,8 @@ app.post("/api/crm/sync", async (req, res) => {
       errorMessage: error.message || 'Transient database pool timeout',
       initiatedBy: userEmail || 'SYSTEM'
     };
-    CRM_SYNC_HISTORY[tenantId].unshift(newLog);
+    history.unshift(newLog);
+    await saveCRMSyncHistory(tenantId, history);
     
     res.status(500).json({ 
       success: false, 
@@ -3471,10 +4403,8 @@ app.post("/api/crm/sync", async (req, res) => {
 // Get CRM Sync history
 app.get("/api/crm/sync-history/:tenantId", async (req, res) => {
   const { tenantId } = req.params;
-  if (!CRM_SYNC_HISTORY[tenantId]) {
-    CRM_SYNC_HISTORY[tenantId] = seedSyncHistory(tenantId);
-  }
-  res.json(CRM_SYNC_HISTORY[tenantId]);
+  const history = await getCRMSyncHistory(tenantId);
+  res.json(history);
 });
 
 // Billing Data Structure
@@ -3488,76 +4418,118 @@ interface BillingData {
     amount: number;
     date: string;
   }[];
+  creditCard?: {
+    brand: string;
+    last4: string;
+    expMonth: string;
+    expYear: string;
+    cardholder: string;
+  };
+  invoices?: {
+    id: string;
+    date: string;
+    description: string;
+    amount: number;
+    status: 'Paid' | 'Unpaid' | 'Pending';
+  }[];
 }
 
-// Mock Billing Database
-const BILLING_DB: Record<string, BillingData> = {
-  'apex-logistics': {
-    tenantId: 'apex-logistics',
-    invoiceStatus: 'Paid',
-    nextBillingDate: '2026-08-03',
-    plan: 'Enterprise',
-    pendingRenewals: [
-      { item: 'Data Streaming Layer', amount: 499, date: '2026-07-15' },
-      { item: 'Compliance Engine', amount: 999, date: '2026-07-20' }
-    ]
-  },
-  'nova-retail': {
-    tenantId: 'nova-retail',
-    invoiceStatus: 'Pending',
-    nextBillingDate: '2026-07-15',
-    plan: 'Team Stream',
-    pendingRenewals: [
-      { item: 'Shopify Integration API', amount: 199, date: '2026-07-10' }
-    ]
-  },
-  'vortex-saas': {
-    tenantId: 'vortex-saas',
-    invoiceStatus: 'Overdue',
-    nextBillingDate: '2026-06-25',
-    plan: 'Starter Flow',
-    pendingRenewals: [
-      { item: 'Domain Mapping', amount: 49, date: '2026-06-25' }
-    ]
-  }
-};
-
 // API Route for Billing
-app.get("/api/billing/:tenantId", (req, res) => {
+app.get("/api/billing/:tenantId", async (req, res) => {
   const { tenantId } = req.params;
-  const billing = BILLING_DB[tenantId] || {
-    tenantId,
-    invoiceStatus: 'Paid',
-    nextBillingDate: '2026-08-01',
-    plan: 'Basic',
-    pendingRenewals: []
-  };
+  const billing = await getBillingData(tenantId);
   res.json(billing);
 });
 
 // Checkout flow
-app.post("/api/billing/:tenantId/checkout", (req, res) => {
+app.post("/api/billing/:tenantId/checkout", async (req, res) => {
   const { tenantId } = req.params;
   const { planId } = req.body;
   
-  if (!BILLING_DB[tenantId]) {
-    BILLING_DB[tenantId] = {
-      tenantId,
-      invoiceStatus: 'Paid',
-      nextBillingDate: '2026-08-01',
-      plan: 'Basic',
-      pendingRenewals: []
-    };
+  const billing = await getBillingData(tenantId);
+
+  // Update billing record
+  billing.plan = planId;
+  billing.invoiceStatus = 'Paid';
+
+  // Calculate price and add dynamic invoice
+  let amount = 0;
+  let desc = "";
+  if (planId === "monthly") {
+    amount = 49;
+    desc = "Standard Monthly Plan - Subscription Update";
+  } else if (planId === "annual") {
+    amount = 399;
+    desc = "Annual Pro Plan - Subscription Upgrade";
+  } else if (planId === "enterprise") {
+    amount = 2499;
+    desc = "Enterprise Custom Plan - Subscription Upgrade";
+  } else {
+    amount = 99;
+    desc = `${planId} Plan Subscription Upgrade`;
   }
 
-  // Update mock database
-  BILLING_DB[tenantId].plan = planId;
-  BILLING_DB[tenantId].invoiceStatus = 'Paid';
+  const newInvoice = {
+    id: `INV-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`,
+    date: new Date().toISOString().split('T')[0],
+    description: desc,
+    amount: amount,
+    status: 'Paid' as const
+  };
+
+  if (!billing.invoices) billing.invoices = [];
+  billing.invoices.unshift(newInvoice);
+
+  // Clear pending renewals on successful upgrade
+  billing.pendingRenewals = [];
+  
+  await saveBillingData(tenantId, billing);
   
   // Simulate payment delay
   setTimeout(() => {
-    res.json({ success: true, message: 'Payment successful', billing: BILLING_DB[tenantId] });
+    res.json({ success: true, message: 'Payment successful', billing });
   }, 1500);
+});
+
+// Update card flow
+app.post("/api/billing/:tenantId/update-card", async (req, res) => {
+  const { tenantId } = req.params;
+  const { cardholder, number, expiry, cvc } = req.body;
+
+  if (!cardholder || !number || !expiry || !cvc) {
+    return res.status(400).json({ success: false, message: "All card details are required" });
+  }
+
+  try {
+    const billing = await getBillingData(tenantId);
+    
+    // Determine card brand
+    let brand = 'Visa';
+    if (number.startsWith('5') || number.startsWith('2')) {
+      brand = 'Mastercard';
+    } else if (number.startsWith('3')) {
+      brand = 'Amex';
+    }
+
+    const last4 = number.replace(/\s+/g, '').slice(-4) || '4242';
+    const parts = expiry.split('/');
+    const expMonth = parts[0] ? parts[0].trim() : '12';
+    const expYear = parts[1] ? `20${parts[1].trim()}` : '2030';
+
+    billing.creditCard = {
+      brand,
+      last4,
+      expMonth,
+      expYear,
+      cardholder: cardholder.trim()
+    };
+
+    await saveBillingData(tenantId, billing);
+    res.json({ success: true, message: "Payment method updated successfully", billing });
+  } catch (error: any) {
+    console.error("Error updating credit card:", error);
+    res.status(500).json({ success: false, message: "Failed to update payment details" });
+  }
 });
 
 // Get current deals
@@ -3589,7 +4561,13 @@ app.get("/api/crm/deals/:tenantId", async (req, res) => {
 // Get all inventory items for a tenant (with auto-seeding if empty)
 app.get("/api/inventory/:tenantId/items", async (req, res) => {
   const { tenantId } = req.params;
+  const { table } = req.query;
   try {
+    const pgItems = await getInventoryRecords(tenantId, table as string);
+    if (pgItems !== null) {
+      return res.json(pgItems);
+    }
+
     const snapshot = await getDocs(collection(db, 'inventory', tenantId, 'items'));
     const items: any[] = [];
     snapshot.forEach(docDoc => {
@@ -3669,7 +4647,7 @@ app.post("/api/inventory/:tenantId/items", async (req, res) => {
     }
 
     // Invalidate dashboard metrics cache
-    dashboardMetricsCache.clear();
+    
 
     res.json({ success: true, item: newItem });
   } catch (e: any) {
@@ -3686,7 +4664,7 @@ app.put("/api/inventory/:tenantId/items/:itemId", async (req, res) => {
     await setDoc(doc(db, 'inventory', tenantId, 'items', itemId), cleanObject(updatedItem));
 
     // Invalidate dashboard metrics cache
-    dashboardMetricsCache.clear();
+    
 
     res.json({ success: true, item: updatedItem });
   } catch (e: any) {

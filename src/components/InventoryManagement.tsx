@@ -72,6 +72,11 @@ export default function InventoryManagement({
   const [sortBy, setSortBy] = useState<'NAME' | 'STOCK' | 'VALUE' | 'SKU'>('NAME');
   const [sortOrder, setSortOrder] = useState<'ASC' | 'DESC'>('ASC');
   
+  // Table selection states
+  const [availableTables, setAvailableTables] = useState<string[]>([]);
+  const [selectedTable, setSelectedTable] = useState<string>(tenant?.dbMapping?.inventory?.table || '');
+  const [isSavingTable, setIsSavingTable] = useState<boolean>(false);
+  
   // Modals state
   const [isRestockModalOpen, setIsRestockModalOpen] = useState<boolean>(false);
   const [selectedItemForRestock, setSelectedItemForRestock] = useState<InventoryItem | null>(null);
@@ -98,12 +103,32 @@ export default function InventoryManagement({
     setLogs([]);
   };
 
+  // Fetch available database tables for the current tenant
+  useEffect(() => {
+    if (!tenant) return;
+    
+    if (tenant.dataSource?.provider === 'PostgreSQL') {
+      fetch(`/api/tenants/${tenant.id}/schema`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.success && data.schema) {
+            setAvailableTables(Object.keys(data.schema));
+          }
+        })
+        .catch(err => console.error("Error fetching schema tables:", err));
+    }
+  }, [tenant]);
+
   // Load Inventory from API (with real database backing)
   useEffect(() => {
     if (!tenant) return;
     
     setLoading(true);
-    fetch(`/api/inventory/${tenant.id}/items`)
+    const url = selectedTable 
+      ? `/api/inventory/${tenant.id}/items?table=${encodeURIComponent(selectedTable)}` 
+      : `/api/inventory/${tenant.id}/items`;
+      
+    fetch(url)
       .then((res) => {
         if (!res.ok) throw new Error("Failed to load inventory");
         return res.json();
@@ -117,7 +142,52 @@ export default function InventoryManagement({
         console.error("Error loading inventory from server API:", err);
         setLoading(false);
       });
-  }, [tenant]);
+  }, [tenant, selectedTable]);
+
+  // Handle saving the selected table as default mapped table in Firestore
+  const handleSaveAsDefault = async () => {
+    if (!tenant) return;
+    setIsSavingTable(true);
+    try {
+      const updatedMapping = {
+        ...(tenant.dbMapping || {}),
+        inventory: {
+          ...(tenant.dbMapping?.inventory || {}),
+          table: selectedTable
+        }
+      };
+      
+      const res = await fetch(`/api/tenants/${tenant.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: tenant.name,
+          industry: tenant.industry,
+          currency: tenant.currency,
+          description: tenant.description,
+          schemaMappings: tenant.schemaMappings,
+          dbMapping: updatedMapping
+        })
+      });
+      
+      if (!res.ok) throw new Error("Failed to save tenant mapping");
+      
+      // Update tenant mapping state locally if possible
+      tenant.dbMapping = updatedMapping;
+      
+      addNotification(
+        'SYSTEM',
+        `Default Inventory Table Updated`,
+        `تم تحديث جدول المخزون الافتراضي`,
+        `Table "${selectedTable}" has been saved as the default inventory table.`,
+        `تم حفظ جدول "${selectedTable}" كجدول المخزون الافتراضي بنجاح.`
+      );
+    } catch (err) {
+      console.error("Error saving default inventory table:", err);
+    } finally {
+      setIsSavingTable(false);
+    }
+  };
 
   // Handle manual restock update
   const handleRestockSubmit = async (e: React.FormEvent) => {
@@ -388,6 +458,59 @@ export default function InventoryManagement({
           </button>
         </div>
       </div>
+
+      {/* Table Selector block (only shown if tenant has a PostgreSQL database config) */}
+      {tenant?.dataSource?.provider === 'PostgreSQL' && (
+        <div className="bg-slate-900/30 p-5 rounded-3xl border border-slate-900/80 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-indigo-600/10 rounded-2xl border border-indigo-500/20 text-indigo-400">
+              <FileSpreadsheet className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-white">
+                {isRtl ? 'اتصال جدول قاعدة البيانات' : 'Database Table Connection'}
+              </h3>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                {isRtl 
+                  ? 'اختر جدول المخزون النشط من الجداول المكتشفة في قاعدة البيانات.' 
+                  : 'Select the active inventory table from the introspected database schemas.'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+            <select
+              value={selectedTable}
+              onChange={(e) => setSelectedTable(e.target.value)}
+              className="bg-slate-950 text-white text-xs font-medium px-4 py-2.5 rounded-xl border border-slate-800 focus:border-indigo-500 focus:outline-none transition-all cursor-pointer h-10 min-w-[200px]"
+            >
+              <option value="">
+                {isRtl ? '-- اختر جدول المخزون --' : '-- Select Inventory Table --'}
+              </option>
+              {availableTables.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+
+            {selectedTable && selectedTable !== tenant.dbMapping?.inventory?.table && (
+              <button
+                onClick={handleSaveAsDefault}
+                disabled={isSavingTable}
+                className="bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 text-xs font-bold px-4 py-2.5 rounded-xl border border-emerald-500/20 transition-all cursor-pointer h-10 flex items-center gap-1.5"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>
+                  {isSavingTable 
+                    ? (isRtl ? 'جاري الحفظ...' : 'Saving...') 
+                    : (isRtl ? 'تعيين كافتراضي' : 'Set as Default')}
+                </span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Audit Logs Drawer / Panel */}
       <AnimatePresence>
