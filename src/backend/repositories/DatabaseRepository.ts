@@ -42,7 +42,7 @@ export async function executeQuery<T = any>(
   params: any[] = []
 ): Promise<T[]> {
   const connectionString = buildConnectionString(dataSource);
-  const client = new Client({ connectionString, ssl: { rejectUnauthorized: false } });
+  const client = new Client({ connectionString, ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: 5000, query_timeout: 10000 });
   try {
     await client.connect();
     await client.query("SET client_encoding TO 'UTF8'");
@@ -61,7 +61,7 @@ export async function withPgClient<T>(
   callback: (client: Client) => Promise<T>
 ): Promise<T> {
   const connectionString = buildConnectionString(dataSource);
-  const client = new Client({ connectionString, ssl: { rejectUnauthorized: false } });
+  const client = new Client({ connectionString, ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: 5000, query_timeout: 10000 });
   try {
     await client.connect();
     await client.query("SET client_encoding TO 'UTF8'");

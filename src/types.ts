@@ -55,6 +55,9 @@ export interface MetricSummary {
   totalInventoryValue?: number;
   lowStockAlertsCount?: number;
   outOfStockAlertsCount?: number;
+  grossMarginPercent?: number;
+  customerLifetimeValue?: number;
+  runRate?: number;
   trends?: {
     revenue: number[];
     profit: number[];

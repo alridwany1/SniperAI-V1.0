@@ -1,65 +1,14 @@
-import express from "express";
-import path from "path";
-import { createServer as createViteServer } from "vite";
-import { GoogleGenAI, Type } from "@google/genai";
-import dotenv from "dotenv";
-dotenv.config();
-import { Tenant, SalesRecord, MetricSummary, ForecastRecord, ChatMessage, CRMDeal, SyncHistoryEntry, InventoryItem } from "./src/types.js";
-import { Client } from "pg";
-import { introspectSchema, mapSchemaWithAI, analyzeAndRouteSchemaWithAI } from "./src/backend/services/SchemaMappingService.js";
-import { buildConnectionString } from "./src/backend/repositories/DatabaseRepository.js";
-import { initializeApp } from "firebase/app";
-import { getFirestore, collection, doc, getDocs, getDoc, setDoc, deleteDoc } from "firebase/firestore";
-import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword } from "firebase/auth";
-import fs from "fs";
-import { StoreService } from "./src/backend/services/StoreService.js";
-import { db, serverAuth } from "./src/backend/config/firebase.js";
-import apiRoutes from "./src/backend/routes/index.js";
-import { errorHandler } from "./src/backend/middlewares/errorHandler.middleware.js";
-import { MongoClient } from "mongodb";
-import axios from "axios";
-import { securityMiddlewares } from './src/backend/middlewares/security.middleware.js';
-import swaggerUi from 'swagger-ui-express';
-import { swaggerSpec } from './src/backend/config/swagger.config.js';
-import { getAi } from "./src/backend/config/ai.js";
+import { db } from '../config/firebase.js';
+import { getDoc, setDoc, doc, collection, getDocs } from 'firebase/firestore';
+import { Tenant, SalesRecord, CRMDeal, SyncHistoryEntry, BillingData, InventoryItem, MetricSummary } from '../../types.js';
+import { StoreService } from '../services/StoreService.js';
+import { Client } from 'pg';
+import { MongoClient } from 'mongodb';
+import { mapSchemaWithAI } from '../services/SchemaMappingService.js';
 
-
-// Dynamically resolve Firebase and Firestore configurations
-let configDbId = "ai-studio-sniperaiv21-8ee02038-98dc-42b7-9275-3cf55e6ffb8d";
-let configProjectId = "project-9b5d1c9a-a93c-4349-b04";
-try {
-  const configPath = path.join(process.cwd(), "firebase-applet-config.json");
-  if (fs.existsSync(configPath)) {
-    const configData = JSON.parse(fs.readFileSync(configPath, "utf8"));
-    if (configData.firestoreDatabaseId) {
-      configDbId = configData.firestoreDatabaseId;
-    }
-    if (configData.projectId) {
-      configProjectId = configData.projectId;
-    }
-  }
-} catch (err) {
-  console.error("Error reading firebase-applet-config.json:", err);
-}
-
-const firebaseConfig = {
-  apiKey: process.env.FIREBASE_API_KEY || "AIzaSyBWqUM5yEJg_3-VSfRQmNliPj9HUT_cn0c",
-  authDomain: `${process.env.FIREBASE_PROJECT_ID || configProjectId}.firebaseapp.com`,
-  projectId: process.env.FIREBASE_PROJECT_ID || configProjectId,
-  storageBucket: `${process.env.FIREBASE_PROJECT_ID || configProjectId}.firebasestorage.app`,
-  appId: process.env.FIREBASE_APP_ID || "1:322173143738:web:9114c8ef9e1b1d4de7d083"
-};
-
-const firebaseApp = initializeApp(firebaseConfig);
-
-// If the project ID is different from the default sandbox/preview project ID, 
-// we are running in a custom deployed project which typically uses "(default)".
-const dbId = process.env.FIRESTORE_DB_ID || 
-             configDbId || 
-             process.env.FIREBASE_DATABASE_ID;
-
-console.log(`Initializing Firestore with Project: ${firebaseConfig.projectId}, Database ID: ${dbId}`);
-
+import { buildConnectionString } from '../repositories/DatabaseRepository.js';
+import { cleanObject } from '../utils/helpers.js';
+import { introspectSchema } from '../services/SchemaMappingService.js';
 export async function setFirestoreCache(collectionName: string, key: string, data: any, ttlSecs: number = 3600) {
   try {
     const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -90,12 +39,7 @@ export async function getFirestoreCache(collectionName: string, key: string) {
   return null;
 }
 
-export function cleanObject<T>(obj: T): T {
-  if (obj === null || obj === undefined) return null as any;
-  return JSON.parse(JSON.stringify(obj, (key, value) => {
-    return value === undefined ? undefined : value;
-  }));
-}
+
 
 export async function getDynamicDBMapping(connectionString: string, tenantId: string) {
   const tenant = await getTenantById(tenantId);
@@ -143,6 +87,7 @@ export async function getDynamicDBMapping(connectionString: string, tenantId: st
     return null;
   }
 }
+import axios from "axios";
 
 // In-memory Axios Cache
 const axiosCache = new Map<string, { data: any; timestamp: number }>();
@@ -176,43 +121,8 @@ const originalRequest = axios.request;
   return originalRequest.call(this, config);
 };
 
-dotenv.config();
-
-const app = express();
-const PORT = 3000;
-
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
-
-app.use(securityMiddlewares);
-
-app.use("/api", apiRoutes);
-
-app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
-
-app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
-
-// Initialize Gemini Client dynamically with lazy initialization
-let cachedAi: GoogleGenAI | null = null;
-let cachedApiKey: string | undefined = undefined;
-
-export function _getAi_deprecated() {
-  const currentKey = process.env.GEMINI_API_KEY;
-  if (!cachedAi || cachedApiKey !== currentKey) {
-    cachedAi = new GoogleGenAI({
-      apiKey: currentKey || "",
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        }
-      }
-    });
-    cachedApiKey = currentKey;
-  }
-  return cachedAi;
-}
-
 // Mock Tenants Data
+
 
 export async function getTenantById(tenantId: string): Promise<Tenant | undefined> {
   let tenant = StoreService.TENANTS.find(t => t.id === tenantId);
@@ -231,6 +141,9 @@ export async function getTenantById(tenantId: string): Promise<Tenant | undefine
 }
 
 // In-memory Sales Database & CRM state
+
+
+
 
 // Helper to seed historical sync logs for a tenant
 export function seedSyncHistory(tenantId: string): SyncHistoryEntry[] {
@@ -596,6 +509,8 @@ StoreService.TENANTS.forEach(t => {
   StoreService.SALES_DB[t.id] = [];
   StoreService.CRM_DB[t.id] = [];
 });
+
+
 
 // Function removed, imported from db_helper
 
@@ -1058,6 +973,7 @@ export async function getInventoryRecords(tenantId: string, tableOverride?: stri
   return null;
 }
 
+
 // Helper to filter and calculate dashboard metrics
 export async function calculateFilteredMetrics(tenantId: string, campaign: string, product: string, startDate: string, endDate: string): Promise<MetricSummary> {
   const rawRecords = await getRawRecords(tenantId);
@@ -1178,12 +1094,41 @@ export async function calculateFilteredMetrics(tenantId: string, campaign: strin
     console.error(`Failed to load inventory for metrics for tenant ${tenantId}:`, e);
   }
 
+  // Calculate mathematically standardized metrics (Section 2.1)
+  const grossMarginPercent = totalRevenue > 0 ? ((totalRevenue - totalCost) / totalRevenue) * 100 : 0;
+  
+  const purchaseFrequency = 4.5; // Average annual purchase frequency
+  const averageCustomerLifespan = 3.0; // Average lifespan in years
+  const customerLifetimeValue = averageOrderValue * purchaseFrequency * averageCustomerLifespan;
+
+  let daysInPeriod = 30;
+  if (filtered.length > 1) {
+    const datesSorted = filtered
+      .map(r => r.date)
+      .filter(d => d && /^\d{4}-\d{2}-\d{2}$/.test(d))
+      .map(d => new Date(d).getTime())
+      .sort((a, b) => a - b);
+    
+    if (datesSorted.length > 1) {
+      const minTime = datesSorted[0];
+      const maxTime = datesSorted[datesSorted.length - 1];
+      const diffDays = (maxTime - minTime) / (1000 * 60 * 60 * 24);
+      if (diffDays > 0) {
+        daysInPeriod = Math.max(1, diffDays);
+      }
+    }
+  }
+  const runRate = (totalRevenue / daysInPeriod) * 365;
+
   return {
     totalRevenue: Math.round(totalRevenue * 100) / 100,
     totalCost: Math.round(totalCost * 100) / 100,
     profit: Math.round(profit * 100) / 100,
     profitMargin: Math.round(profitMargin * 10) / 10,
     averageOrderValue: Math.round(averageOrderValue * 100) / 100,
+    grossMarginPercent: Math.round(grossMarginPercent * 100) / 100,
+    customerLifetimeValue: Math.round(customerLifetimeValue * 100) / 100,
+    runRate: Math.round(runRate * 100) / 100,
     salesCount,
     anomalies,
     productDistribution,
@@ -1201,12 +1146,24 @@ export async function calculateFilteredMetrics(tenantId: string, campaign: strin
   };
 }
 
+// API Routes
+
+// Get all tenants and active tenant info
+// Get all tenants and active tenant info
+
+// Test connection to a data source
+
+// Register a new tenant
+
+// Update an existing tenant settings
+
+// Bulk delete tenants
 
 
+// Connection Diagnostic endpoint
 
 
-
-
+// Refresh schema mapping
 
 
 export function applyMappingToAnalysis(analysis: any, dbMapping: any) {
@@ -1261,9 +1218,6 @@ export function applyMappingToAnalysis(analysis: any, dbMapping: any) {
   
   return { ...analysis, tables };
 }
-
-
-
 export async function checkTableExistence(tenantId: string) {
   const tenant = await getTenantById(tenantId);
   const status = {
@@ -1338,83 +1292,6 @@ export async function checkTableExistence(tenantId: string) {
   return status;
 }
 
+// Dashboard metrics cache map removed in favor of Firestore cache
 
-
-
-
-
-
-
-
-
-
-
-
-interface BillingData {
-  tenantId: string;
-  invoiceStatus: 'Paid' | 'Pending' | 'Overdue';
-  nextBillingDate: string;
-  plan: string;
-  pendingRenewals: {
-    item: string;
-    amount: number;
-    date: string;
-  }[];
-  creditCard?: {
-    brand: string;
-    last4: string;
-    expMonth: string;
-    expYear: string;
-    cardholder: string;
-  };
-  invoices?: {
-    id: string;
-    date: string;
-    description: string;
-    amount: number;
-    status: 'Paid' | 'Unpaid' | 'Pending';
-  }[];
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-app.use(errorHandler);
-
-// Vite middleware // Vite middleware & Static SPA routes Static SPA routes
-export async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-    console.log("Vite dev middleware attached.");
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
-    console.log("Production static files mounted.");
-  }
-
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on port ${PORT}`);
-  });
-}
-
-startServer();
+// Get raw transaction records for a specific date

@@ -188,6 +188,34 @@ export default function KPICards({ summary, activeTenant, language }: KPICardsPr
       icon: <Package className="w-4 h-4" />,
       iconColorClass: 'text-fuchsia-400',
       bgGradient: 'from-fuchsia-600/10 to-transparent border-fuchsia-900/40',
+    },
+    {
+      id: 'kpi-ltv',
+      label: language === 'ar' ? 'القيمة الحياتية للعميل' : 'Customer Lifetime Value (LTV)',
+      value: summary.customerLifetimeValue ?? Math.round(averageOrderValue * 4.5 * 3.0),
+      formatter: (val: number) => `${symbol}${Math.round(val).toLocaleString()}`,
+      trend: [],
+      color: '#e879f9',
+      status: language === 'ar' ? 'أداء نمو الأصول' : 'Asset retention baseline',
+      statusDesc: '',
+      statusColor: 'text-fuchsia-400',
+      icon: <TrendingUp className="w-4 h-4" />,
+      iconColorClass: 'text-fuchsia-400',
+      bgGradient: 'from-fuchsia-600/5 to-transparent border-slate-800/80',
+    },
+    {
+      id: 'kpi-runrate',
+      label: language === 'ar' ? 'معدل التشغيل السنوي' : 'Annualized Run Rate',
+      value: summary.runRate ?? Math.round(totalRevenue * 12),
+      formatter: (val: number) => `${symbol}${Math.round(val).toLocaleString()}`,
+      trend: [],
+      color: '#2dd4bf',
+      status: language === 'ar' ? 'إسقاط ١٢ شهراً' : '12-month forward extrapolation',
+      statusDesc: '',
+      statusColor: 'text-teal-400',
+      icon: <DollarSign className="w-4 h-4" />,
+      iconColorClass: 'text-teal-400',
+      bgGradient: 'from-teal-600/5 to-transparent border-slate-800/80',
     }
   ];
 
@@ -380,7 +408,7 @@ export default function KPICards({ summary, activeTenant, language }: KPICardsPr
       </div>
 
       {/* Desktop Grid View */}
-      <div id="kpi-cards-desktop-grid" className="hidden md:grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+      <div id="kpi-cards-desktop-grid" className="hidden md:grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
         {cards.map((card) => (
           <div 
             key={card.id}
