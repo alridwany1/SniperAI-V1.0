@@ -1,15 +1,24 @@
 import { Client } from "pg";
 
 export function buildConnectionString(dataSource: any) {
-  const host = dataSource.host!.trim();
+  let host = dataSource.host!.trim();
+  
+  if (host.startsWith('process.env.')) {
+    const envVar = host.replace('process.env.', '');
+    host = process.env[envVar] || host;
+  } else if (host.startsWith('$')) {
+    const envVar = host.substring(1);
+    host = process.env[envVar] || host;
+  }
+
   const lowercaseHost = host.toLowerCase();
   
   if ((lowercaseHost.startsWith('postgresql://') || lowercaseHost.startsWith('postgres://')) && host.includes('@')) {
     if (!host.includes('sslmode=')) {
       const separator = host.includes('?') ? '&' : '?';
-      return `${host}${separator}sslmode=require`;
+      return `${host}${separator}sslmode=verify-full`;
     }
-    return host;
+    return host.replace(/sslmode=require/gi, 'sslmode=verify-full');
   }
   
   let cleanHost = host;
@@ -30,7 +39,7 @@ export function buildConnectionString(dataSource: any) {
   const port = cleanHost.includes(':') ? '' : ':5432';
   const encodedUser = encodeURIComponent(dataSource.username || '');
   const encodedPass = encodeURIComponent(dataSource.apiKey || '');
-  return `postgresql://${encodedUser}:${encodedPass}@${cleanHost}${port}/${dbName}?sslmode=require`;
+  return `postgresql://${encodedUser}:${encodedPass}@${cleanHost}${port}/${dbName}?sslmode=verify-full`;
 }
 
 /**
@@ -42,7 +51,7 @@ export async function executeQuery<T = any>(
   params: any[] = []
 ): Promise<T[]> {
   const connectionString = buildConnectionString(dataSource);
-  const client = new Client({ connectionString, ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: 5000, query_timeout: 10000 });
+  const client = new Client({ connectionString, ssl: { rejectUnauthorized: true }, connectionTimeoutMillis: 5000, query_timeout: 10000 });
   try {
     await client.connect();
     await client.query("SET client_encoding TO 'UTF8'");
@@ -61,7 +70,7 @@ export async function withPgClient<T>(
   callback: (client: Client) => Promise<T>
 ): Promise<T> {
   const connectionString = buildConnectionString(dataSource);
-  const client = new Client({ connectionString, ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: 5000, query_timeout: 10000 });
+  const client = new Client({ connectionString, ssl: { rejectUnauthorized: true }, connectionTimeoutMillis: 5000, query_timeout: 10000 });
   try {
     await client.connect();
     await client.query("SET client_encoding TO 'UTF8'");

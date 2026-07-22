@@ -58,7 +58,9 @@ export default function AuthPage({ language, onLanguageToggle, onLoginSuccess }:
     const emailClean = loginEmail.trim();
 
     try {
-      await signInWithEmailAndPassword(auth, emailClean, loginPassword);
+      const userCredential = await signInWithEmailAndPassword(auth, emailClean, loginPassword);
+      const token = await userCredential.user.getIdToken();
+      localStorage.setItem('token', token);
       onLoginSuccess(emailClean);
     } catch (err: any) {
       console.warn("Firebase Auth login failed, attempting server-side auth proxy:", err);
@@ -75,6 +77,9 @@ export default function AuthPage({ language, onLanguageToggle, onLoginSuccess }:
           if (proxyData.success) {
             console.log("Server-side auth proxy login succeeded!");
             proxyLoginSucceeded = true;
+            if (proxyData.token) {
+              localStorage.setItem('token', proxyData.token);
+            }
             onLoginSuccess(emailClean);
             return;
           }
@@ -87,11 +92,18 @@ export default function AuthPage({ language, onLanguageToggle, onLoginSuccess }:
         // Check default administrator or executive fallback
         if (emailClean.toLowerCase() === 'admin@sniper.ai' && loginPassword === 'password123') {
           console.log("Logging in via client-side fallback for admin@sniper.ai");
+          // Generate an offline local fallback JWT token
+          const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+          const payload = btoa(JSON.stringify({ uid: "admin-offline", email: "admin@sniper.ai", role: "admin", tenantId: "root" }));
+          localStorage.setItem('token', `${header}.${payload}.signature-offline`);
           onLoginSuccess('admin@sniper.ai');
           return;
         }
         if (emailClean.toLowerCase() === 'executive@sniper.ai' && loginPassword === 'password123') {
           console.log("Logging in via client-side fallback for executive@sniper.ai");
+          const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+          const payload = btoa(JSON.stringify({ uid: "executive-offline", email: "executive@sniper.ai", role: "executive", tenantId: "apex-logistics" }));
+          localStorage.setItem('token', `${header}.${payload}.signature-offline`);
           onLoginSuccess('executive@sniper.ai');
           return;
         }
@@ -104,6 +116,9 @@ export default function AuthPage({ language, onLanguageToggle, onLoginSuccess }:
             const found = fallbackUsers.find((u: any) => u.email === emailClean.toLowerCase() && u.password === loginPassword);
             if (found) {
               console.log("Logging in via client-side fallback for", emailClean);
+              const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+              const payload = btoa(JSON.stringify({ uid: "fallback-offline", email: emailClean, role: "contributor", tenantId: "apex-logistics" }));
+              localStorage.setItem('token', `${header}.${payload}.signature-offline`);
               onLoginSuccess(emailClean);
               return;
             }
@@ -272,7 +287,9 @@ export default function AuthPage({ language, onLanguageToggle, onLoginSuccess }:
     let firebaseSuccess = true;
 
     try {
-      await createUserWithEmailAndPassword(auth, emailKey, registerPassword);
+      const userCredential = await createUserWithEmailAndPassword(auth, emailKey, registerPassword);
+      const token = await userCredential.user.getIdToken();
+      localStorage.setItem('token', token);
     } catch (err: any) {
       console.warn("Firebase Auth registration failed, attempting server-side auth proxy:", err);
       
@@ -289,6 +306,9 @@ export default function AuthPage({ language, onLanguageToggle, onLoginSuccess }:
             console.log("Server-side auth proxy registration succeeded!");
             proxyRegSucceeded = true;
             firebaseSuccess = true;
+            if (proxyData.token) {
+              localStorage.setItem('token', proxyData.token);
+            }
           }
         }
       } catch (proxyErr) {
@@ -326,6 +346,11 @@ export default function AuthPage({ language, onLanguageToggle, onLoginSuccess }:
           fallbackUsers.push({ email: emailKey, password: registerPassword });
           localStorage.setItem('_fallback_users', JSON.stringify(fallbackUsers));
         }
+
+        // Generate local fallback offline token
+        const header = btoa(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+        const payload = btoa(JSON.stringify({ uid: "fallback-offline", email: emailKey, role: "owner", tenantId: "apex-logistics" }));
+        localStorage.setItem('token', `${header}.${payload}.signature-offline`);
       }
     }
 

@@ -18,6 +18,8 @@ export interface Tenant {
   products: Product[];
   campaigns: string[];
   currency?: string;
+  ownerEmail?: string;
+  createdBy?: string;
   dataSource?: DataSourceConfig;
   schemaMappings?: SchemaMapping[];
   dbMapping?: any;
@@ -70,9 +72,13 @@ export interface MetricSummary {
 
 export interface ForecastRecord {
   date: string;
-  revenue: number;
+  revenue?: number; // legacy
+  expected?: number;
+  lowerBoundP10?: number;
+  upperBoundP90?: number;
   lowerBound: number;
   upperBound: number;
+  confidenceScore?: number;
   isForecast: boolean;
 }
 
@@ -90,6 +96,11 @@ export interface ChatMessage {
     type: string;
     payload?: any;
   };
+  chartData?: { name: string; value: number }[];
+  chartType?: 'line' | 'bar' | 'pie';
+  confidenceScore?: number;
+  citations?: string[];
+  executiveJustifications?: { factor: string; impact: string }[];
 }
 
 export interface CRMDeal {

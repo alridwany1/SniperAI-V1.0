@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { StoreService } from '../services/StoreService.js';
-import { getTenantById, getRawRecords, getCRMRecords, calculateFilteredMetrics } from '../utils/serverHelpers.js';
+import { getTenantById, getRawRecords, getCRMRecords, calculateFilteredMetrics, getInventoryRecords } from '../utils/serverHelpers.js';
 import { introspectSchema } from '../services/SchemaMappingService.js';
 import { getDoc, doc } from 'firebase/firestore';
 import { db } from '../config/firebase.js';
@@ -52,7 +52,7 @@ static async summarize(req: Request, res: Response, next: NextFunction) {
 
     try {
       const geminiRes = await getAi().models.generateContent({
-        model: "gemini-3.5-flash",
+        model: "gemini-2.5-flash",
         contents: prompt,
         config: {
           systemInstruction,
@@ -156,6 +156,33 @@ ${topDeals}
       console.warn("Failed to build CRM summary for assistant:", e);
     }
 
+    let inventorySummary = "No direct inventory data available.";
+    try {
+      const inventoryItems = await getInventoryRecords(tenantId);
+      if (inventoryItems && inventoryItems.length > 0) {
+        const totalStock = inventoryItems.reduce((acc, item) => acc + (item.stockLevel || 0), 0);
+        const lowStock = inventoryItems.filter(item => (item.stockLevel || 0) <= (item.safetyStock || 0)).length;
+        const outOfStock = inventoryItems.filter(item => (item.stockLevel || 0) === 0).length;
+        const totalVal = inventoryItems.reduce((acc, item) => acc + ((item.stockLevel || 0) * (item.unitCost || 0)), 0);
+        const topInventory = [...inventoryItems]
+          .sort((a, b) => (b.stockLevel || 0) - (a.stockLevel || 0))
+          .slice(0, 5)
+          .map(item => `- **${item.productName}**: Sku: ${item.sku || 'N/A'}, Qty: ${item.stockLevel || 0} (Min Safety: ${item.safetyStock || 0}, Cost: $${item.unitCost || 0}, Price: $${item.unitPrice || 0})`)
+          .join('\n');
+        inventorySummary = `
+- Total unique items in warehouse: ${inventoryItems.length}
+- Total stock units count: ${totalStock}
+- Low-stock items count (at or below safety stock): ${lowStock}
+- Out-of-stock items count: ${outOfStock}
+- Total inventory cost valuation: $${totalVal.toLocaleString()}
+- Top 5 stocked products in warehouse:
+${topInventory}
+`;
+      }
+    } catch (e) {
+      console.warn("Failed to load inventory for assistant context:", e);
+    }
+
     let schemaStr = "No external database schema available.";
     if (tenant.dataSource?.provider === 'PostgreSQL') {
         const ds = tenant.dataSource;
@@ -230,6 +257,9 @@ ${topDeals}
       
       --- CRM CLIENTS & DEALS SUMMARY ---
       ${crmSummary}
+
+      --- WAREHOUSE INVENTORY SUMMARY ---
+      ${inventorySummary}
       
       --- DATABASE SCHEMA ---
       ${schemaStr}
@@ -246,12 +276,23 @@ ${topDeals}
          - If language is "en" (English): Write strictly in professional, flawless, and strategic business English.
       5. NO AI-SLOP: Avoid technical jargon or system tags like "Core Node Online" or "Status: OK" or "Port: 3000" in your output. You are a human consultant, not a terminal script.
       6. DATA GRAPHICS / TABLES: Construct clean, formatted Markdown tables whenever comparing statistics, summarizing metrics, or showing lists of deals/products.
-      7. ACTION TRIGGERS & DEEP LINKING:
+      7. DYNAMIC CHARTS (CRITICAL):
+         If your answer contains comparative numbers, seasonal trends, or financial stats that can be plotted, ALWAYS append a JSON-formatted chart tag at the very end of your response, strictly formatted as:
+         [[CHART: {"type": "line" | "bar" | "pie", "data": [{"name": "Jan", "value": 120}, {"name": "Feb", "value": 150}]}]]
+         Make the labels and values match the language: use Arabic labels/names if language is "ar" and English labels/names if language is "en".
+      8. CONFIDENCE SCORE & FOOTNOTE CITATIONS:
+         At the end of every data analysis or query answer, you MUST append a confidence score and citations of which sources were used (e.g., Sales DB, CRM pipeline, Warehouse items). Output them as:
+         [[CONFIDENCE: <number between 70 and 100>]]
+         [[CITATIONS: ["Sales Database (PostgreSQL)", "CRM Contacts & Won Deals", "Warehouse Inventory Records"]]]
+      9. EXECUTIVE JUSTIFICATIONS:
+         For any metric summary, profit change, trend projection, or stock shortfall, provide strategic justifications at the end of your response:
+         [[JUSTIFICATIONS: [{"factor": "Holiday Seasonality / موسم الأعياد", "impact": "+15%"}, {"factor": "Supply chain delay / تأخر سلسلة التوريد", "impact": "-5%"}] ]]
+      10. ACTION TRIGGERS & DEEP LINKING:
          If the user wants to navigate to, open, or view a specific section/screen/page in our dashboard, you MUST append a JSON action tag at the very end of your response, strictly formatted as:
          [[ACTION: {"type": "navigate_to", "payload": "<page>"}]]
          Available pages:
          - Dashboard / Main Panel: "dashboard"
-         - CRM / Deals / Sales Pipeline: "crm_tracker" or "dashboard" (CRM tracker is a widget on the dashboard, so navigating to "dashboard" is appropriate, but you can also use "dashboard" or "users")
+         - CRM / Deals / Sales Pipeline: "crm_tracker" or "dashboard"
          - Inventory / Products: "inventory"
          - Billing / Subscription / Plans: "billing"
          - Profile / My Profile: "profile"
@@ -307,7 +348,7 @@ ${topDeals}
       };
 
       const geminiRes = await getAi().models.generateContent({
-        model: "gemini-3.5-flash",
+        model: "gemini-2.5-flash",
         contents,
         config: {
           systemInstruction,
@@ -334,7 +375,7 @@ ${topDeals}
              const ds = tenant.dataSource;
              if (ds && ds.provider === 'PostgreSQL') {
                const connectionString = buildConnectionString(ds);
-               const client = new Client({ connectionString, ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: 5000, query_timeout: 10000 });
+               const client = new Client({ connectionString, ssl: { rejectUnauthorized: true }, connectionTimeoutMillis: 5000, query_timeout: 10000 });
                try {
                  await client.connect();
                  await client.query("SET client_encoding TO 'UTF8'");
@@ -401,7 +442,7 @@ ${topDeals}
         });
         
         const secondRes = await getAi().models.generateContent({
-          model: "gemini-3.5-flash",
+          model: "gemini-2.5-flash",
           contents,
           config: { systemInstruction, temperature: 0.7 }
         });
@@ -838,10 +879,66 @@ Hello **${userName}**, here is the comprehensive strategic overview of **${tenan
       }
     }
 
+    let confidenceVal = undefined;
+    const confidenceRegex = /\[\[CONFIDENCE:\s*(\d+)\s*\]\]/;
+    const confidenceMatch = responseText.match(confidenceRegex);
+    if (confidenceMatch) {
+      try {
+        confidenceVal = parseInt(confidenceMatch[1], 10);
+        responseText = responseText.replace(confidenceRegex, "").trim();
+      } catch (err) {
+        console.warn("Failed to parse confidence score:", err);
+      }
+    }
+
+    let citationsArr = undefined;
+    const citationsRegex = /\[\[CITATIONS:\s*(\[.+?\])\s*\]\]/;
+    const citationsMatch = responseText.match(citationsRegex);
+    if (citationsMatch) {
+      try {
+        citationsArr = JSON.parse(citationsMatch[1]);
+        responseText = responseText.replace(citationsRegex, "").trim();
+      } catch (err) {
+        console.warn("Failed to parse citations:", err);
+      }
+    }
+
+    let chartData = undefined;
+    let chartType = undefined;
+    const chartRegex = /\[\[CHART:\s*(\{.+?\})\s*\]\]/;
+    const chartMatch = responseText.match(chartRegex);
+    if (chartMatch) {
+      try {
+        const chartObj = JSON.parse(chartMatch[1]);
+        chartData = chartObj.data;
+        chartType = chartObj.type;
+        responseText = responseText.replace(chartRegex, "").trim();
+      } catch (err) {
+        console.warn("Failed to parse chart JSON:", err);
+      }
+    }
+
+    let justificationsArr = undefined;
+    const justificationsRegex = /\[\[JUSTIFICATIONS:\s*(\[.+?\])\s*\]\]/;
+    const justificationsMatch = responseText.match(justificationsRegex);
+    if (justificationsMatch) {
+      try {
+        justificationsArr = JSON.parse(justificationsMatch[1]);
+        responseText = responseText.replace(justificationsRegex, "").trim();
+      } catch (err) {
+        console.warn("Failed to parse justifications JSON:", err);
+      }
+    }
+
     res.json({
       text: responseText,
       tableData: parsedTable,
-      action: actionObj
+      action: actionObj,
+      chartData: chartData,
+      chartType: chartType,
+      confidenceScore: confidenceVal,
+      citations: citationsArr,
+      executiveJustifications: justificationsArr
     });
 
   } catch (error: any) {
@@ -941,7 +1038,7 @@ Format with elegant professional structure, clear markdown bullet points, and hi
 
     try {
       const geminiRes = await getAi().models.generateContent({
-        model: "gemini-3.1-flash-lite",
+        model: "gemini-2.5-flash",
         contents: prompt,
         config: {
           systemInstruction: isArabic

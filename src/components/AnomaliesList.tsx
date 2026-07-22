@@ -7,6 +7,8 @@ import {
 import { Language } from '../utils/translations';
 import { motion, AnimatePresence } from 'motion/react';
 
+import { safeFetchJson } from '../utils/apiUtils';
+
 interface AnomaliesListProps {
   anomalies: SalesRecord[];
   activeTenant: Tenant;
@@ -86,7 +88,7 @@ export default function AnomaliesList({ anomalies: initialAnomalies, activeTenan
     setErrorMsg('');
     
     try {
-      const response = await fetch('/api/assistant/analyze-anomaly', {
+      const data = await safeFetchJson('/api/assistant/analyze-anomaly', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -99,7 +101,6 @@ export default function AnomaliesList({ anomalies: initialAnomalies, activeTenan
         })
       });
 
-      const data = await response.json();
       if (data.auditText) {
         setAuditText(data.auditText);
         if (data.isFallback) {

@@ -5,6 +5,7 @@ import { StoreService } from '../services/StoreService.js';
 import { buildConnectionString } from '../repositories/DatabaseRepository.js';
 import { getAi } from '../config/ai.js';
 import { getRawRecords, calculateFilteredMetrics, setFirestoreCache, getFirestoreCache, checkTableExistence, getTenantById } from "../utils/serverHelpers.js";
+import { ForecastingService } from '../services/forecasting.service.js';
 
 interface ForecastRecord {
   date: string;
@@ -139,7 +140,7 @@ static async runQuery(req: Request, res: Response, next: NextFunction) {
   if (ds && ds.provider === 'PostgreSQL') {
     // Run live query in Postgres!
     const connectionString = buildConnectionString(ds);
-    const client = new Client({ connectionString, ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: 5000, query_timeout: 10000 });
+    const client = new Client({ connectionString, ssl: { rejectUnauthorized: true }, connectionTimeoutMillis: 5000, query_timeout: 10000 });
     try {
       await client.connect();
       await client.query("SET client_encoding TO 'UTF8'");
@@ -492,278 +493,39 @@ static async runQuery(req: Request, res: Response, next: NextFunction) {
       const slope = cleanN > 1 ? (cleanN * sumXY - sumX * sumY) / (cleanN * sumXX - sumX * sumX) : 0;
       const intercept = cleanN > 0 ? (sumY - slope * sumX) / cleanN : meanValue;
 
-      const modelType = req.body.modelType || 'regression';
-      const forecast: ForecastRecord[] = [];
-      const lastDateStr = dates[dates.length - 1];
-      const lastDate = new Date(lastDateStr);
+      let forecast: ForecastRecord[] = [];
+      let modelName = "";
+      let modelMetrics = "";
+      let confidenceScore = 0;
+      let lowConfidenceWarning = "";
 
-      let modelName = "Linear Regression (Baseline Math)";
-      let modelMetrics = `Slope: ${slope.toFixed(2)} units/day`;
-      let confidenceScore = 0.70;
-
-      if (modelType === 'arima') {
-        modelName = "ARIMA(1, 1, 1) Autoregressive Integrated Moving Average";
-        confidenceScore = 0.85;
-        let diffs: number[] = [];
-        for (let i = 1; i < n; i++) {
-          diffs.push(values[i] - values[i - 1]);
-        }
-        const meanDiff = diffs.length > 0 ? diffs.reduce((a, b) => a + b, 0) / diffs.length : slope;
+      try {
+        const result = ForecastingService.runAutoSelectionEngine(dates, values, days, tenantId);
+        forecast = result.forecast as any;
+        modelName = result.modelName;
+        modelMetrics = `MAE: ${result.metrics.mae.toFixed(2)}, RMSE: ${result.metrics.rmse.toFixed(2)}, MAPE: ${result.metrics.mape.toFixed(2)}%`;
+        confidenceScore = result.confidenceScore;
         
-        const phi = 0.45; // AR(1) coefficient
-        const theta = -0.15; // MA(1) coefficient
-        
-        let lastVal = values[n - 1] || 100;
-        let lastDiff = diffs.length > 0 ? diffs[diffs.length - 1] : slope;
-        let lastError = 0;
-
-        for (let step = 1; step <= days; step++) {
-          const fDate = new Date(lastDate);
-          fDate.setDate(lastDate.getDate() + step);
-          const dateStr = fDate.toISOString().split('T')[0];
-          const dayOfWeek = fDate.getDay();
-          const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
-          const dayOfWeekFactor = (tenantId === 'nova-retail') 
-            ? (isWeekend ? 1.3 : 0.88) 
-            : (isWeekend ? 0.35 : 1.25);
-
-          // Generate error e_t
-          const error = (Math.random() - 0.5) * (lastVal * 0.05);
-          
-          // ARIMA calculation: diff = constant + phi * lastDiff + theta * lastError + error
-          const constant = meanDiff * (1 - phi);
-          const diff = constant + phi * lastDiff + theta * lastError + error;
-          
-          let expected = (lastVal + diff) * dayOfWeekFactor;
-          if (expected < 10) expected = Math.max(10, Math.random() * 100);
-
-          // Update states
-          lastVal = expected;
-          lastDiff = diff;
-          lastError = error;
-
-          const margin = expected * 0.14;
-          forecast.push({
-            date: dateStr,
-            revenue: Math.round(expected * 100) / 100,
-            lowerBound: Math.round(Math.max(0, expected - margin) * 100) / 100,
-            upperBound: Math.round((expected + margin) * 100) / 100,
-            expected: Math.round(expected * 100) / 100,
-            lowerBoundP10: Math.round(Math.max(0, expected - margin) * 100) / 100,
-            upperBoundP90: Math.round((expected + margin) * 100) / 100,
-            confidenceScore,
-            isForecast: true
-          });
+        if (result.driftWarning) {
+          lowConfidenceWarning += `⚠️ DATA DRIFT ALERT: ${result.driftWarning}\n\n`;
         }
-        modelMetrics = `ARIMA(1,1,1) parameter estimation. AIC: 412.8, BIC: 421.4. Parameters: phi_1 = ${phi}, theta_1 = ${theta}, differencing d = 1. Residual variance: 0.023.`;
-      } else if (modelType === 'lstm') {
-        modelName = "LSTM Recurrent Neural Network (Deep Learning)";
-        confidenceScore = 0.78;
-        const sigmoid = (x: number) => 1 / (1 + Math.exp(-x));
-        const tanh = (x: number) => Math.tanh(x);
-        const averageHistory = sumY / n;
-
-        // Hidden State and Cell State vectors
-        let h = [0.1, -0.05, 0.08, -0.1];
-        let cell = [0.0, 0.0, 0.0, 0.0];
-
-        // Static deterministic matrices representing gated synapses
-        const Wf = [
-          [0.15, -0.2, 0.1, 0.3, 0.1],
-          [-0.1, 0.15, 0.25, -0.15, -0.05],
-          [0.2, 0.1, -0.15, 0.1, 0.2],
-          [-0.15, 0.3, 0.1, 0.2, -0.1]
-        ];
-        const bf = [0.05, -0.02, 0.0, 0.05];
-
-        const Wi = [
-          [0.2, 0.1, -0.1, 0.15, 0.35],
-          [0.15, -0.15, 0.3, 0.1, -0.25],
-          [-0.05, 0.25, 0.15, -0.2, 0.08],
-          [0.3, 0.1, -0.25, 0.15, 0.15]
-        ];
-        const bi = [-0.05, 0.05, -0.02, 0.0];
-
-        const Wc = [
-          [-0.15, 0.25, 0.35, -0.1, 0.4],
-          [0.3, -0.08, 0.15, 0.25, -0.15],
-          [0.08, 0.3, -0.25, 0.15, 0.2],
-          [-0.25, 0.15, 0.08, 0.3, -0.08]
-        ];
-        const bc = [0.0, 0.05, -0.05, 0.02];
-
-        const Wo = [
-          [0.08, 0.15, -0.25, 0.35, 0.15],
-          [-0.15, 0.08, 0.3, -0.08, 0.2],
-          [0.25, -0.25, 0.08, 0.15, -0.08],
-          [0.15, 0.3, -0.08, 0.25, 0.12]
-        ];
-        const bo = [0.02, -0.02, 0.05, 0.0];
-
-        const Wy = [0.35, -0.25, 0.45, 0.2];
-        const by = 0.05;
-
-        const warmUpCount = Math.min(15, n);
-        for (let i = n - warmUpCount; i < n; i++) {
-          const xt = values[i] / averageHistory;
-          const concat = [...h, xt];
-          for (let r = 0; r < 4; r++) {
-            let sum_f = bf[r], sum_i = bi[r], sum_c = bc[r], sum_o = bo[r];
-            for (let c_idx = 0; c_idx < 5; c_idx++) {
-              sum_f += Wf[r][c_idx] * concat[c_idx];
-              sum_i += Wi[r][c_idx] * concat[c_idx];
-              sum_c += Wc[r][c_idx] * concat[c_idx];
-              sum_o += Wo[r][c_idx] * concat[c_idx];
-            }
-            const f_val = sigmoid(sum_f);
-            const i_val = sigmoid(sum_i);
-            const c_cand = tanh(sum_c);
-            const o_val = sigmoid(sum_o);
-
-            cell[r] = f_val * cell[r] + i_val * c_cand;
-            h[r] = o_val * tanh(cell[r]);
-          }
-        }
-
-        let currentInput = values[n - 1] / averageHistory;
-        for (let step = 1; step <= days; step++) {
-          const fDate = new Date(lastDate);
-          fDate.setDate(lastDate.getDate() + step);
-          const dateStr = fDate.toISOString().split('T')[0];
-          const dayOfWeek = fDate.getDay();
-          const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
-          const dayOfWeekFactor = (tenantId === 'nova-retail') 
-            ? (isWeekend ? 1.25 : 0.9) 
-            : (isWeekend ? 0.45 : 1.2);
-
-          const concat = [...h, currentInput];
-          for (let r = 0; r < 4; r++) {
-            let sum_f = bf[r], sum_i = bi[r], sum_c = bc[r], sum_o = bo[r];
-            for (let c_idx = 0; c_idx < 5; c_idx++) {
-              sum_f += Wf[r][c_idx] * concat[c_idx];
-              sum_i += Wi[r][c_idx] * concat[c_idx];
-              sum_c += Wc[r][c_idx] * concat[c_idx];
-              sum_o += Wo[r][c_idx] * concat[c_idx];
-            }
-            const f_val = sigmoid(sum_f);
-            const i_val = sigmoid(sum_i);
-            const c_cand = tanh(sum_c);
-            const o_val = sigmoid(sum_o);
-
-            cell[r] = f_val * cell[r] + i_val * c_cand;
-            h[r] = o_val * tanh(cell[r]);
-          }
-
-          let outputScale = by;
-          for (let r = 0; r < 4; r++) {
-            outputScale += Wy[r] * h[r];
-          }
-
-          const trendBase = intercept + slope * (n + step);
-          let expected = (averageHistory * (1.0 + outputScale * 0.15)) * dayOfWeekFactor;
-          expected = expected * 0.65 + trendBase * 0.35;
-          if (expected < 10) expected = Math.max(10, Math.random() * 150);
-
-          currentInput = expected / averageHistory;
-
-          const margin = expected * 0.18;
-          forecast.push({
-            date: dateStr,
-            revenue: Math.round(expected * 100) / 100,
-            lowerBound: Math.round(Math.max(0, expected - margin) * 100) / 100,
-            upperBound: Math.round((expected + margin) * 100) / 100,
-            expected: Math.round(expected * 100) / 100,
-            lowerBoundP10: Math.round(Math.max(0, expected - margin) * 100) / 100,
-            upperBoundP90: Math.round((expected + margin) * 100) / 100,
-            confidenceScore,
-            isForecast: true
-          });
-        }
-        modelMetrics = `LSTM 4-cell recurrent gate structure. Iterations: 150 epochs. Final Training MSE Loss: 0.0124. Convergence speed: Adam Optimizer stabilized hidden states in 138 steps.`;
-      } else if (modelType === 'gemini_hybrid') {
-        modelName = "Gemini Cognitive AI (Hybrid Reasoning Model)";
-        confidenceScore = 0.91;
-        const campaignBoost = (campaign !== 'All') ? 1.22 : 1.0;
-        const productBoost = (product !== 'All') ? 1.12 : 1.0;
-        for (let step = 1; step <= days; step++) {
-          const fDate = new Date(lastDate);
-          fDate.setDate(lastDate.getDate() + step);
-          const dateStr = fDate.toISOString().split('T')[0];
-          const dayOfWeek = fDate.getDay();
-          const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
-          const dayOfWeekFactor = (tenantId === 'nova-retail') 
-            ? (isWeekend ? 1.35 : 0.85) 
-            : (isWeekend ? 0.3 : 1.3);
-
-          const index = n + step;
-          const wave = Math.sin(index * 0.35) * 200 + Math.cos(index * 0.1) * 100;
-          let expected = (intercept + slope * index + wave) * dayOfWeekFactor * campaignBoost * productBoost;
-          if (expected < 10) expected = Math.max(10, Math.random() * 200);
-
-          const margin = expected * 0.10;
-          forecast.push({
-            date: dateStr,
-            revenue: Math.round(expected * 100) / 100,
-            lowerBound: Math.round(Math.max(0, expected - margin) * 100) / 100,
-            upperBound: Math.round((expected + margin) * 100) / 100,
-            expected: Math.round(expected * 100) / 100,
-            lowerBoundP10: Math.round(Math.max(0, expected - margin) * 100) / 100,
-            upperBoundP90: Math.round((expected + margin) * 100) / 100,
-            confidenceScore,
-            isForecast: true
-          });
-        }
-        modelMetrics = `Gemini Cognitive feedback engine. Real-time parameter sync reducing bounds to 10% via strategic contextual inference.`;
-      } else {
-        // Default / Regression
-        for (let step = 1; step <= days; step++) {
-          const fDate = new Date(lastDate);
-          fDate.setDate(lastDate.getDate() + step);
-          const dateStr = fDate.toISOString().split('T')[0];
-
-          const dayOfWeek = fDate.getDay();
-          let dayOfWeekFactor = 1.0;
-          if (tenantId === 'nova-retail') {
-            dayOfWeekFactor = (dayOfWeek === 0 || dayOfWeek === 6) ? 1.3 : 0.88;
-          } else {
-            dayOfWeekFactor = (dayOfWeek === 0 || dayOfWeek === 6) ? 0.35 : 1.25;
-          }
-
-          const index = n + step;
-          let expected = (intercept + slope * index) * dayOfWeekFactor;
-          if (expected < 10) expected = Math.max(10, Math.random() * 100);
-
-          const margin = expected * 0.15;
-          
-          forecast.push({
-            date: dateStr,
-            revenue: Math.round(expected * 100) / 100,
-            lowerBound: Math.round(Math.max(0, expected - margin) * 100) / 100,
-            upperBound: Math.round((expected + margin) * 100) / 100,
-            expected: Math.round(expected * 100) / 100,
-            lowerBoundP10: Math.round(Math.max(0, expected - margin) * 100) / 100,
-            upperBoundP90: Math.round((expected + margin) * 100) / 100,
-            confidenceScore,
-            isForecast: true
-          });
-        }
+      } catch (err: any) {
+        return res.json({ forecast: [], analysis: `Error running predictive engine: ${err.message}` });
       }
 
-      // If historical data is insufficient (< 30 data points), explicitly lower confidence score & flag warning (Section 4.1)
-      let lowConfidenceWarning = "";
       if (n < 30) {
         confidenceScore = Math.max(0.1, confidenceScore - 0.4);
         forecast.forEach(f => {
           f.confidenceScore = confidenceScore;
           // Insufficient history widens the pessimistic/optimistic uncertainty interval bounds by 50%
-          const originalMargin = (f.upperBoundP90! - f.lowerBoundP10!) / 2;
+          const originalMargin = ((f.upperBoundP90 || 0) - (f.lowerBoundP10 || 0)) / 2;
           const widerMargin = originalMargin * 1.5;
-          f.lowerBoundP10 = Math.round(Math.max(0, f.expected! - widerMargin) * 100) / 100;
-          f.upperBoundP90 = Math.round((f.expected! + widerMargin) * 100) / 100;
+          f.lowerBoundP10 = Math.round(Math.max(0, (f.expected || 0) - widerMargin) * 100) / 100;
+          f.upperBoundP90 = Math.round(((f.expected || 0) + widerMargin) * 100) / 100;
           f.lowerBound = f.lowerBoundP10;
           f.upperBound = f.upperBoundP90;
         });
-        lowConfidenceWarning = `⚠️ LOW HISTORICAL DATA VOLUME DETECTED: Only ${n} historical periods were identified. Time-series algorithms require >= 30 records for robust parameter convergence. Variance boundaries have been statistically widened to protect against overfitting.\n\n`;
+        lowConfidenceWarning += `⚠️ LOW HISTORICAL DATA VOLUME DETECTED: Only ${n} historical periods were identified. Time-series algorithms require >= 30 records for robust parameter convergence. Variance boundaries have been statistically widened to protect against overfitting.\n\n`;
       }
 
       // 3. Structured JSON AI Explanation with Explainable AI & Driver Attribution (Sections 3.2, 4.2)
@@ -779,6 +541,8 @@ static async runQuery(req: Request, res: Response, next: NextFunction) {
         First predicted day expected revenue: $${forecast[0].expected}
         Midpoint predicted day expected revenue: $${forecast[Math.floor(days/2)].expected}
         Terminal predicted day expected revenue: $${forecast[days - 1].expected}
+        
+        Model Evaluation Metrics: ${modelMetrics}
         
         Analyze this ${modelName} predictive model and output.
         You MUST provide your response as a valid, parsable JSON object matching this TypeScript structure:
@@ -796,11 +560,11 @@ static async runQuery(req: Request, res: Response, next: NextFunction) {
         { factor: "Active Campaign Alignment", impact: campaign !== 'All' ? "+6.4%" : "+0.0%" },
         { factor: "Product Margin Contribution", impact: product !== 'All' ? "+3.8%" : "+1.2%" }
       ];
-      let insights = `${lowConfidenceWarning}The time-series forecast model projects a rolling trend over the next ${days} days with a terminal expected value of $${forecast[days - 1].expected!.toLocaleString()}. Expect minor fluctuations in cyclic patterns corresponding to business-day velocity.`;
+      let insights = `${lowConfidenceWarning}The time-series forecast model (${modelMetrics}) projects a rolling trend over the next ${days} days with a terminal expected value of $${forecast[days - 1].expected!.toLocaleString()}. Expect minor fluctuations in cyclic patterns corresponding to business-day velocity.`;
 
       try {
         const geminiRes = await getAi().models.generateContent({
-          model: "gemini-3.1-flash-lite",
+          model: "gemini-2.5-flash",
           contents: aiPrompt,
           config: {
             systemInstruction: "You are the advanced finance engine of SniperAI, specializing in structured, mathematically sound multi-tenant forecasting commentary.",

@@ -95,7 +95,7 @@ static async strategic(req: Request, res: Response, next: NextFunction) {
     let reportContent = "";
     try {
       const geminiRes = await getAi().models.generateContent({
-        model: "gemini-3.1-flash-lite",
+        model: "gemini-2.5-flash",
         contents: prompt,
         config: {
           systemInstruction: isArabic 
@@ -231,7 +231,7 @@ static async summarize(req: Request, res: Response, next: NextFunction) {
 
     try {
       const geminiRes = await getAi().models.generateContent({
-        model: "gemini-3.1-flash-lite",
+        model: "gemini-2.5-flash",
         contents: prompt,
         config: {
           systemInstruction: "You are a concise executive assistant, providing only the three most important bullet points.",

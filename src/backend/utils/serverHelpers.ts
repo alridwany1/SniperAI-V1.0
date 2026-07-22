@@ -5,12 +5,17 @@ import { StoreService } from '../services/StoreService.js';
 import { Client } from 'pg';
 import { MongoClient } from 'mongodb';
 import { mapSchemaWithAI } from '../services/SchemaMappingService.js';
+import { CacheService } from '../services/cache.service.js';
 
 import { buildConnectionString } from '../repositories/DatabaseRepository.js';
 import { cleanObject } from '../utils/helpers.js';
 import { introspectSchema } from '../services/SchemaMappingService.js';
+
 export async function setFirestoreCache(collectionName: string, key: string, data: any, ttlSecs: number = 3600) {
   try {
+    const memoryKey = `sniper:${collectionName}:${key}`;
+    CacheService.set(memoryKey, data, ttlSecs);
+
     const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
     await setDoc(doc(db, collectionName, safeKey), {
       data: JSON.stringify(data),
@@ -24,6 +29,12 @@ export async function setFirestoreCache(collectionName: string, key: string, dat
 
 export async function getFirestoreCache(collectionName: string, key: string) {
   try {
+    const memoryKey = `sniper:${collectionName}:${key}`;
+    const memCached = CacheService.get(memoryKey);
+    if (memCached !== null) {
+      return memCached;
+    }
+
     const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
     const d = await getDoc(doc(db, collectionName, safeKey));
     if (d.exists()) {
@@ -31,7 +42,11 @@ export async function getFirestoreCache(collectionName: string, key: string) {
       if (val.expiresAt && Date.now() > val.expiresAt) {
         return null;
       }
-      return JSON.parse(val.data);
+      const parsed = JSON.parse(val.data);
+      // Populate memory cache for subsequent requests
+      const remainingTtl = val.expiresAt ? Math.max(10, Math.round((val.expiresAt - Date.now()) / 1000)) : 300;
+      CacheService.set(memoryKey, parsed, remainingTtl);
+      return parsed;
     }
   } catch (e) {
     console.error(`Cache get error [${collectionName}]:`, e);
@@ -543,7 +558,7 @@ export async function getRawRecords(tenantId: string): Promise<SalesRecord[]> {
     const mapping = await getDynamicDBMapping(connectionString, tenantId);
     
     if (mapping && mapping.sales && mapping.sales.table) {
-      const client = new Client({ connectionString, ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: 5000, query_timeout: 10000 });
+      const client = new Client({ connectionString, ssl: { rejectUnauthorized: true }, connectionTimeoutMillis: 5000, query_timeout: 10000 });
       try {
         await client.connect();
         await client.query("SET client_encoding TO 'UTF8'");
@@ -727,7 +742,7 @@ export async function getCRMRecords(tenantId: string): Promise<CRMDeal[]> {
     const mapping = await getDynamicDBMapping(connectionString, tenantId);
     
     if (mapping && mapping.crm && mapping.crm.table) {
-      const client = new Client({ connectionString, ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: 5000, query_timeout: 10000 });
+      const client = new Client({ connectionString, ssl: { rejectUnauthorized: true }, connectionTimeoutMillis: 5000, query_timeout: 10000 });
       try {
         await client.connect();
         await client.query("SET client_encoding TO 'UTF8'");
@@ -882,7 +897,7 @@ export async function getInventoryRecords(tenantId: string, tableOverride?: stri
     const targetTable = tableOverride || (mapping && mapping.inventory && mapping.inventory.table);
     
     if (targetTable) {
-      const client = new Client({ connectionString, ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: 5000, query_timeout: 10000 });
+      const client = new Client({ connectionString, ssl: { rejectUnauthorized: true }, connectionTimeoutMillis: 5000, query_timeout: 10000 });
       try {
         await client.connect();
         await client.query("SET client_encoding TO 'UTF8'");
@@ -1232,7 +1247,7 @@ export async function checkTableExistence(tenantId: string) {
   if (tenant?.dataSource?.provider === 'PostgreSQL') {
     const ds = tenant.dataSource;
     const connectionString = buildConnectionString(ds);
-    const client = new Client({ connectionString, ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: 5000, query_timeout: 10000 });
+    const client = new Client({ connectionString, ssl: { rejectUnauthorized: true }, connectionTimeoutMillis: 5000, query_timeout: 10000 });
     try {
       await client.connect();
       await client.query("SET client_encoding TO 'UTF8'");

@@ -4,6 +4,7 @@ import { ForecastRecord, Tenant } from '../types';
 import { Sparkles, TrendingUp, HelpCircle, Eye, EyeOff, ZoomIn, Info, X, Loader2, Calendar, SlidersHorizontal } from 'lucide-react';
 import { translations, Language } from '../utils/translations';
 import { getCurrencySymbol } from '../utils/currency';
+import { safeFetchJson } from '../utils/apiUtils';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface ChartPoint {
@@ -130,7 +131,7 @@ export default function SalesChart({
       setCompareLoading(true);
       try {
         if (compareMode === 'products') {
-          const resA = await fetch('/api/dashboard/metrics', {
+          const dataA = await safeFetchJson('/api/dashboard/metrics', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -141,9 +142,8 @@ export default function SalesChart({
               endDate: historicalData[historicalData.length - 1]?.date || '2026-07-03'
             })
           });
-          const dataA = await resA.json();
 
-          const resB = await fetch('/api/dashboard/metrics', {
+          const dataB = await safeFetchJson('/api/dashboard/metrics', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -154,14 +154,13 @@ export default function SalesChart({
               endDate: historicalData[historicalData.length - 1]?.date || '2026-07-03'
             })
           });
-          const dataB = await resB.json();
 
           if (isMounted) {
             setProdChartDataA(dataA.chartData || []);
             setProdChartDataB(dataB.chartData || []);
           }
         } else if (compareMode === 'dates') {
-          const resA = await fetch('/api/dashboard/metrics', {
+          const dataA = await safeFetchJson('/api/dashboard/metrics', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -172,9 +171,8 @@ export default function SalesChart({
               endDate: endDateA
             })
           });
-          const dataA = await resA.json();
 
-          const resB = await fetch('/api/dashboard/metrics', {
+          const dataB = await safeFetchJson('/api/dashboard/metrics', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -185,7 +183,6 @@ export default function SalesChart({
               endDate: endDateB
             })
           });
-          const dataB = await resB.json();
 
           if (isMounted) {
             setDateChartDataA(dataA.chartData || []);
@@ -396,7 +393,7 @@ export default function SalesChart({
       setIsModalOpen(true);
       setModalLoading(true);
       try {
-        const response = await fetch('/api/dashboard/transactions', {
+        const resData = await safeFetchJson('/api/dashboard/transactions', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -406,12 +403,7 @@ export default function SalesChart({
             date: clickedDate,
           }),
         });
-        if (response.ok) {
-          const resData = await response.json();
-          setModalTransactions(resData.transactions || []);
-        } else {
-          setModalTransactions([]);
-        }
+        setModalTransactions(resData.transactions || []);
       } catch (err) {
         console.error("Error fetching transaction details:", err);
         setModalTransactions([]);

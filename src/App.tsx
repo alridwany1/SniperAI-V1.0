@@ -27,9 +27,11 @@ import OnboardingTour from './components/OnboardingTour';
 import AddTenantScreen from './components/AddTenantScreen';
 import InventoryManagement from './components/InventoryManagement';
 import LegalAndApiModal from './components/LegalAndApiModal';
+import { SystemHealthDashboard } from './components/SystemHealthDashboard';
 import { translations, Language } from './utils/translations';
 import { Layers, Shield, Sparkles, TrendingUp, Cpu, Radio, Globe, LogOut, PlusCircle, Users, CreditCard, User, Database, RefreshCw, Package, Settings, Eye, EyeOff, ArrowUp, ArrowDown, GripVertical, SlidersHorizontal } from 'lucide-react';
 import { addAuditLog } from './utils/auditLogger';
+import { safeFetchJson } from './utils/apiUtils';
 import sniperLogo from './assets/images/sniper_ai_logo_1783155755401.jpg';
 import { db, handleFirestoreError, OperationType } from './utils/firebase';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
@@ -160,7 +162,7 @@ export default function App() {
   const t = translations[language];
 
   // Active view toggle (for super admin)
-  const [activeView, setActiveView] = useState<'dashboard' | 'users' | 'billing' | 'profile' | 'inventory'>('dashboard');
+  const [activeView, setActiveView] = useState<'dashboard' | 'users' | 'billing' | 'profile' | 'inventory' | 'health'>('dashboard');
 
   // Federated user profile details
   const [userProfile, setUserProfile] = useState<{
@@ -300,19 +302,31 @@ export default function App() {
 
   // Initial Load: Fetch Tenants
   useEffect(() => {
-    fetch('/api/tenants')
-      .then(res => res.json())
+    if (!isAuthenticated) return;
+
+    safeFetchJson<Tenant[]>('/api/tenants')
       .then((data: Tenant[]) => {
-        const unique = Array.from(new Map(data.map(item => [item.id, item])).values());
-        setTenants(unique);
-        if (unique.length > 0) {
-          // Set active tenant details
-          const first = unique.find(t => t.id === selectedTenantId) || unique[0];
-          setActiveTenant(first);
+        if (Array.isArray(data)) {
+          const unique = Array.from(new Map(data.map(item => [item.id, item])).values());
+          setTenants(unique);
+          if (unique.length > 0) {
+            // Set active tenant details
+            const first = unique.find(t => t.id === selectedTenantId) || unique[0];
+            setActiveTenant(first);
+          }
+        } else {
+          console.error("Fetched tenants response is not an array:", data);
         }
       })
       .catch(err => { console.error("Error fetching tenants:", err); showToast("Error fetching tenants", "error"); });
-  }, []);
+  }, [isAuthenticated, selectedTenantId]);
+
+  useEffect(() => {
+    if (selectedTenantId) {
+      localStorage.setItem('selectedTenantId', selectedTenantId);
+      localStorage.setItem('tenantId', selectedTenantId);
+    }
+  }, [selectedTenantId]);
 
   // Load chat messages from Firestore
   useEffect(() => {
@@ -627,14 +641,16 @@ export default function App() {
       if (active) setActiveTenant(active);
     }
 
+    if (!isAuthenticated) return;
+
     fetchMetrics();
     fetchCRMDeals();
     fetchSyncHistory();
-  }, [selectedTenantId, selectedCampaign, selectedProduct, startDate, endDate, tenants]);
+  }, [selectedTenantId, selectedCampaign, selectedProduct, startDate, endDate, tenants, isAuthenticated]);
 
   // Main HTTP post to get calculated metrics and charts
   const fetchMetrics = () => {
-    return fetch('/api/dashboard/metrics', {
+    return safeFetchJson('/api/dashboard/metrics', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -645,17 +661,35 @@ export default function App() {
         endDate
       })
     })
-      .then(res => res.json())
       .then((data) => {
-        setSummary(data.summary);
-        setChartData(data.chartData);
-        if (data.dbStatus) {
+        if (data && data.summary) {
+          setSummary(data.summary);
+        } else {
+          setSummary({
+            totalRevenue: 0,
+            totalCost: 0,
+            profit: 0,
+            profitMargin: 0,
+            averageOrderValue: 0,
+            salesCount: 0,
+            anomalies: [],
+            productDistribution: []
+          });
+        }
+        
+        if (data && data.chartData) {
+          setChartData(data.chartData);
+        } else {
+          setChartData([]);
+        }
+
+        if (data && data.dbStatus) {
           setDbStatus(data.dbStatus);
         } else {
           setDbStatus(null);
         }
 
-        if (data.filterMeta) {
+        if (data && data.filterMeta) {
           setDynamicCampaigns(data.filterMeta.campaigns || []);
           setDynamicProducts(data.filterMeta.products || []);
           const newMin = data.filterMeta.minDate || '2026-01-01';
@@ -671,7 +705,7 @@ export default function App() {
         }
 
         // Auto-detect anomalies and populate global notifications feed
-        if (data.summary.anomalies && data.summary.anomalies.length > 0) {
+        if (data && data.summary && data.summary.anomalies && data.summary.anomalies.length > 0) {
           data.summary.anomalies.forEach((anomaly: SalesRecord) => {
             const uniqueId = `anomaly-${anomaly.date}-${anomaly.product}-${anomaly.revenue}`;
             setNotifications((prev) => {
@@ -707,18 +741,32 @@ export default function App() {
 
   // Get CRM status
   const fetchCRMDeals = () => {
-    return fetch(`/api/crm/deals/${selectedTenantId}`)
-      .then(res => res.json())
-      .then((deals) => setCrmDeals(deals))
+    return safeFetchJson(`/api/crm/deals/${selectedTenantId}`)
+      .then((deals) => {
+        if (Array.isArray(deals)) {
+          setCrmDeals(deals);
+        } else if (deals && Array.isArray(deals.deals)) {
+          setCrmDeals(deals.deals);
+        } else {
+          console.warn("Fetched CRM deals is not an array:", deals);
+          setCrmDeals([]);
+        }
+      })
       .catch(err => { console.error("Error loading CRM deals:", err); showToast("Error loading CRM deals", "error"); });
   };
 
   const fetchSyncHistory = () => {
     setSyncHistoryLoading(true);
-    return fetch(`/api/crm/sync-history/${selectedTenantId}`)
-      .then(res => res.json())
+    return safeFetchJson(`/api/crm/sync-history/${selectedTenantId}`)
       .then((history) => {
-        setSyncHistory(history);
+        if (Array.isArray(history)) {
+          setSyncHistory(history);
+        } else if (history && Array.isArray(history.history)) {
+          setSyncHistory(history.history);
+        } else {
+          console.warn("Fetched CRM sync history is not an array:", history);
+          setSyncHistory([]);
+        }
         setSyncHistoryLoading(false);
       })
       .catch(err => {
@@ -766,7 +814,7 @@ export default function App() {
   // Handle forecast calculations & commentary query
   const handleTriggerForecast = (modelType: string = 'regression') => {
     setForecastLoading(true);
-    fetch('/api/forecast', {
+    safeFetchJson('/api/forecast', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -777,10 +825,17 @@ export default function App() {
         modelType
       })
     })
-      .then(res => res.json())
       .then((data) => {
-        setForecastData(data.forecast);
-        setForecastAnalysis(data.analysis);
+        if (data && Array.isArray(data.forecast)) {
+          setForecastData(data.forecast);
+        } else {
+          setForecastData([]);
+        }
+        if (data && typeof data.analysis === 'string') {
+          setForecastAnalysis(data.analysis);
+        } else {
+          setForecastAnalysis('');
+        }
         setForecastLoading(false);
         addAuditLog(
           userEmail || 'SYSTEM',
@@ -864,7 +919,7 @@ export default function App() {
     saveChatHistory(updatedWithUser);
     setChatLoading(true);
 
-    fetch('/api/assistant/chat', {
+    safeFetchJson('/api/assistant/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -880,7 +935,6 @@ export default function App() {
         userProfile: userProfile || undefined
       })
     })
-      .then(res => res.json())
       .then((data) => {
         const modelMsg: ChatMessage = {
           id: `model-${Date.now()}`,
@@ -888,7 +942,12 @@ export default function App() {
           text: data.text,
           timestamp: new Date().toLocaleTimeString(),
           tableData: data.tableData,
-          action: data.action
+          action: data.action,
+          chartData: data.chartData,
+          chartType: data.chartType,
+          confidenceScore: data.confidenceScore,
+          citations: data.citations,
+          executiveJustifications: data.executiveJustifications
         };
         const updatedWithModel = [...updatedWithUser, modelMsg];
         setChatMessages(updatedWithModel);
@@ -918,7 +977,7 @@ export default function App() {
   // Handle Auto-Summarizing current session findings
   const handleAutoSummarize = () => {
     setChatLoading(true);
-    fetch('/api/assistant/summarize', {
+    safeFetchJson('/api/assistant/summarize', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -930,7 +989,6 @@ export default function App() {
         language
       })
     })
-      .then(res => res.json())
       .then((data) => {
         const modelMsg: ChatMessage = {
           id: `model-summary-${Date.now()}`,
@@ -967,7 +1025,7 @@ export default function App() {
   // Handle generating strategic report
   const handleGenerateReport = () => {
     setReportLoading(true);
-    fetch('/api/reports/strategic', {
+    safeFetchJson('/api/reports/strategic', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -979,7 +1037,6 @@ export default function App() {
         language
       })
     })
-      .then(res => res.json())
       .then((data) => {
         setReportText(data.report);
         setReportLoading(false);
@@ -1006,18 +1063,11 @@ export default function App() {
   // Handle syncing simulated CRM pipeline progress
   const handleSyncCRM = () => {
     setCrmLoading(true);
-    fetch('/api/crm/sync', {
+    safeFetchJson('/api/crm/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tenantId: selectedTenantId, userEmail })
     })
-      .then(async (res) => {
-        const data = await res.json();
-        if (!res.ok || data.success === false) {
-          throw new Error(data.details || data.error || 'Transient connection timeout');
-        }
-        return data;
-      })
       .then((data) => {
         setCrmDeals(data.deals || []);
         setCrmLoading(false);
@@ -1422,6 +1472,17 @@ export default function App() {
               <User className="w-4 h-4" />
               <span>{language === 'ar' ? 'الملف الشخصي' : 'Profile'}</span>
             </button>
+            <button
+              onClick={() => setActiveView('health')}
+              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
+                activeView === 'health'
+                  ? 'bg-gradient-to-r from-indigo-600/20 to-violet-600/20 text-indigo-400 border border-indigo-500/20'
+                  : 'text-slate-400 hover:text-white border border-transparent'
+              }`}
+            >
+              <Cpu className="w-4 h-4" />
+              <span>{language === 'ar' ? 'صحة النظام' : 'System Health'}</span>
+            </button>
           </div>
         </div>
 
@@ -1487,6 +1548,8 @@ export default function App() {
             addNotification={addNotification}
             onUpdateTenantProducts={handleUpdateTenantProducts}
           />
+        ) : activeView === 'health' ? (
+          <SystemHealthDashboard language={language} />
         ) : (
           <>
             {/* Row 1: Active filters segmentation */}

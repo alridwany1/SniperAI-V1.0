@@ -9,6 +9,7 @@ import {
 import { Language } from '../utils/translations';
 import { jsPDF } from 'jspdf';
 import { addAuditLog } from '../utils/auditLogger';
+import { safeFetchJson } from '../utils/apiUtils';
 import { MetricSummary, SalesRecord } from '../types';
 import { 
   AreaChart, Area, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer, CartesianGrid,
@@ -273,12 +274,11 @@ export default function StrategicReport({
     
     setIsSummarizing(true);
     try {
-      const response = await fetch('/api/reports/summarize', {
+      const data = await safeFetchJson('/api/reports/summarize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reportText })
       });
-      const data = await response.json();
       setReportSummary(data.summary);
       setShowSummary(true);
     } catch (error) {

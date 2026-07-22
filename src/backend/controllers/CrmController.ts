@@ -5,6 +5,7 @@ import { setDoc, doc } from 'firebase/firestore';
 import { StoreService } from '../services/StoreService.js';
 import { cleanObject } from '../utils/helpers.js';
 import { SyncHistoryEntry } from '../../types.js';
+import { CacheService } from '../services/cache.service.js';
 
 export class CrmController {
 static async sync(req: Request, res: Response, next: NextFunction) {
@@ -46,6 +47,9 @@ static async sync(req: Request, res: Response, next: NextFunction) {
     } catch (e) {
       console.error(`Failed to save synced CRM deals to Firestore for tenant ${tenantId}:`, e);
     }
+    
+    // Invalidate tenant cache
+    CacheService.invalidateTenant(tenantId);
     
     const history = await getCRMSyncHistory(tenantId);
     

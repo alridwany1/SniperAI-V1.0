@@ -1,8 +1,90 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    
+    // Global default-deny safety net
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
+    }
+
+    // Reusable, hardened global helper primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Check user profiles DB for role and tenant parameters
+    function getUserProfile(email) {
+      return get(/databases/$(database)/documents/user_profiles/$(email)).data;
+    }
+
+    function isUserInTenant(tenantId) {
+      return isSignedIn() && (
+        getUserProfile(request.auth.token.email).tenantId == tenantId ||
+        getUserProfile(request.auth.token.email).role == 'admin'
+      );
+    }
+
+    function isTenantOwner(tenantId) {
+      return isSignedIn() && (
+        (getUserProfile(request.auth.token.email).tenantId == tenantId && getUserProfile(request.auth.token.email).role == 'owner') ||
+        getUserProfile(request.auth.token.email).role == 'admin'
+      );
+    }
+
+    function isWriter(tenantId) {
+      return isSignedIn() && (
+        getUserProfile(request.auth.token.email).tenantId == tenantId && (
+          getUserProfile(request.auth.token.email).role == 'admin' ||
+          getUserProfile(request.auth.token.email).role == 'owner' ||
+          getUserProfile(request.auth.token.email).role == 'contributor'
+        )
+      );
+    }
+
+    function isAdmin() {
+      return isSignedIn() && getUserProfile(request.auth.token.email).role == 'admin';
+    }
+
+    // Entity validation blueprints
+    function isValidUserProfile(data) {
+      return data.fullName is string && data.fullName.size() <= 100 &&
+             data.avatarId is string && data.avatarId.size() <= 50;
+    }
+
+    // Matches
+    match /user_profiles/{email} {
+      allow read: if isSignedIn() && (request.auth.token.email == email || isAdmin());
+      allow create: if isSignedIn() && request.auth.token.email == email && isValidUserProfile(incoming());
+      allow update: if isSignedIn() && request.auth.token.email == email && isValidUserProfile(incoming()) &&
+                    incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'phone', 'role', 'company', 'bio', 'location', 'avatarId', 'updatedAt']);
+    }
+
+    match /tenants/{tenantId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /tenant_data/{tenantId} {
+      allow read: if isSignedIn() && isUserInTenant(tenantId);
+      allow write: if isAdmin() || isTenantOwner(tenantId);
+    }
+
+    match /chat_histories/{docId} {
+      allow read, write: if isSignedIn();
+    }
+
+    match /inventory/{tenantId}/items/{itemId} {
+      allow read: if isSignedIn() && isUserInTenant(tenantId);
+      allow write: if isSignedIn() && isWriter(tenantId);
     }
   }
 }
+

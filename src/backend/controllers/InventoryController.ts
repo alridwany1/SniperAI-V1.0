@@ -5,6 +5,7 @@ import { Tenant } from '../../types.js';
 import { db } from '../config/firebase.js';
 import { getDoc, setDoc, doc, collection, getDocs, deleteDoc } from 'firebase/firestore';
 import { cleanObject } from '../utils/helpers.js';
+import { CacheService } from '../services/cache.service.js';
 
 export class InventoryController {
 static async getItems(req: Request, res: Response, next: NextFunction) {
@@ -94,7 +95,7 @@ static async createItem(req: Request, res: Response, next: NextFunction) {
     }
 
     // Invalidate dashboard metrics cache
-    
+    CacheService.invalidateTenant(tenantId);
 
     res.json({ success: true, item: newItem });
   } catch (e: any) {
@@ -110,7 +111,7 @@ static async updateItem(req: Request, res: Response, next: NextFunction) {
     await setDoc(doc(db, 'inventory', tenantId, 'items', itemId), cleanObject(updatedItem));
 
     // Invalidate dashboard metrics cache
-    
+    CacheService.invalidateTenant(tenantId);
 
     res.json({ success: true, item: updatedItem });
   } catch (e: any) {

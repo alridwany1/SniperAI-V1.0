@@ -18,6 +18,7 @@ import {
   FileSpreadsheet
 } from 'lucide-react';
 import { InventoryItem, Tenant } from '../types';
+import { safeFetchJson } from '../utils/apiUtils';
 import { db, handleFirestoreError, OperationType } from '../utils/firebase';
 import { 
   collection, 
@@ -108,8 +109,7 @@ export default function InventoryManagement({
     if (!tenant) return;
     
     if (tenant.dataSource?.provider === 'PostgreSQL') {
-      fetch(`/api/tenants/${tenant.id}/schema`)
-        .then(res => res.json())
+      safeFetchJson(`/api/tenants/${tenant.id}/schema`)
         .then(data => {
           if (data.success && data.schema) {
             setAvailableTables(Object.keys(data.schema));
@@ -128,11 +128,7 @@ export default function InventoryManagement({
       ? `/api/inventory/${tenant.id}/items?table=${encodeURIComponent(selectedTable)}` 
       : `/api/inventory/${tenant.id}/items`;
       
-    fetch(url)
-      .then((res) => {
-        if (!res.ok) throw new Error("Failed to load inventory");
-        return res.json();
-      })
+    safeFetchJson(url)
       .then((loadedItems: InventoryItem[]) => {
         setItems(loadedItems);
         generateMockLogs(loadedItems);
@@ -157,7 +153,7 @@ export default function InventoryManagement({
         }
       };
       
-      const res = await fetch(`/api/tenants/${tenant.id}`, {
+      await safeFetchJson(`/api/tenants/${tenant.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -169,8 +165,6 @@ export default function InventoryManagement({
           dbMapping: updatedMapping
         })
       });
-      
-      if (!res.ok) throw new Error("Failed to save tenant mapping");
       
       // Update tenant mapping state locally if possible
       tenant.dbMapping = updatedMapping;
@@ -205,12 +199,11 @@ export default function InventoryManagement({
     };
 
     try {
-      const res = await fetch(`/api/inventory/${tenant.id}/items/${updatedItem.id}`, {
+      await safeFetchJson(`/api/inventory/${tenant.id}/items/${updatedItem.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updatedItem)
       });
-      if (!res.ok) throw new Error("Failed to update stock");
       
       // Update local items state
       setItems(prev => prev.map(item => item.id === updatedItem.id ? updatedItem : item));
@@ -272,12 +265,11 @@ export default function InventoryManagement({
     };
 
     try {
-      const res = await fetch(`/api/inventory/${tenant.id}/items`, {
+      await safeFetchJson(`/api/inventory/${tenant.id}/items`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newInventoryItem)
       });
-      if (!res.ok) throw new Error("Failed to add inventory item");
       
       // 2. Add to local items state
       setItems(prev => [newInventoryItem, ...prev]);

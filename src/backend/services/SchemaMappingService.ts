@@ -37,7 +37,7 @@ export function decodeUTF8String(val: any): string {
 }
 
 export async function introspectSchema(connectionString: string) {
-  const client = new Client({ connectionString, ssl: { rejectUnauthorized: false } });
+  const client = new Client({ connectionString, ssl: { rejectUnauthorized: true } });
   try {
     await client.connect();
     await client.query("SET client_encoding TO 'UTF8'");
@@ -137,7 +137,7 @@ export async function mapSchemaWithAI(schema: any) {
     `;
     
     const response = await getAi().models.generateContent({
-      model: 'gemini-3.5-flash',
+      model: 'gemini-2.5-flash',
       contents: prompt,
       config: { temperature: 0.1 }
     });
@@ -317,7 +317,7 @@ export async function analyzeAndRouteSchemaWithAI(schema: any, displayLanguage: 
     `;
 
     const response = await getAi().models.generateContent({
-      model: 'gemini-3.5-flash',
+      model: 'gemini-2.5-flash',
       contents: prompt,
       config: { 
         temperature: 0.1,

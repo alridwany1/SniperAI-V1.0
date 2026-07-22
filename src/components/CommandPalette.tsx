@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Search, Command, X, Globe, Package, FileText, 
-  TrendingUp, AlertTriangle, CreditCard, User, Users, ChevronRight, CornerDownLeft
+  TrendingUp, AlertTriangle, CreditCard, User, Users, ChevronRight, CornerDownLeft, Cpu
 } from 'lucide-react';
 import { Tenant } from '../types';
 import { Language } from '../utils/translations';
@@ -13,8 +13,8 @@ interface CommandPaletteProps {
   onSelectTenant: (id: string) => void;
   selectedProduct: string;
   onSelectProduct: (product: string) => void;
-  activeView: 'dashboard' | 'users' | 'billing' | 'profile' | 'inventory';
-  setActiveView: (view: 'dashboard' | 'users' | 'billing' | 'profile' | 'inventory') => void;
+  activeView: 'dashboard' | 'users' | 'billing' | 'profile' | 'inventory' | 'health';
+  setActiveView: (view: 'dashboard' | 'users' | 'billing' | 'profile' | 'inventory' | 'health') => void;
   isSuperAdmin: boolean;
   language: Language;
 }
@@ -202,6 +202,19 @@ export default function CommandPalette({
         setIsOpen(false);
       },
       badge: isRtl ? 'حساب' : 'Profile'
+    });
+
+    items.push({
+      id: 'nav-health',
+      type: 'report',
+      title: isRtl ? 'مراقبة صحة النظام والأداء' : 'System Health & Performance diagnostics',
+      subtitle: isRtl ? 'مؤشرات استجابة قاعدة البيانات والذاكرة والذكاء الاصطناعي' : 'Real-time database latency, server RAM, and AI metrics',
+      icon: <Cpu className="w-4 h-4 text-emerald-400" />,
+      action: () => {
+        setActiveView('health');
+        setIsOpen(false);
+      },
+      badge: isRtl ? 'صحة' : 'Health'
     });
 
     if (isSuperAdmin) {

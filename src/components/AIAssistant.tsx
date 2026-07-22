@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ChatMessage, Tenant } from '../types';
-import { Send, Sparkles, MessageSquare, Trash2, ArrowUpRight, Table, X, Minus, Download, Database, Volume2, VolumeX, Mic, MicOff, Lock, RefreshCw, ShieldAlert, Info } from 'lucide-react';
+import { Send, Sparkles, MessageSquare, Trash2, ArrowUpRight, Table, X, Minus, Download, Database, Volume2, VolumeX, Mic, MicOff, Lock, RefreshCw, ShieldAlert, Info, BarChart3 } from 'lucide-react';
 import { Language } from '../utils/translations';
 import { motion, AnimatePresence } from 'motion/react';
+import { ResponsiveContainer, LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, Legend } from 'recharts';
 import VisualQueryBuilder from './VisualQueryBuilder';
 import { useApp } from '../context/AppContext';
 
@@ -527,6 +528,89 @@ export default function AIAssistant({
                           </div>
                         )}
 
+                        {/* Phase 4: Dynamic Recharts Interactive Charts */}
+                        {Array.isArray(msg.chartData) && msg.chartData.length > 0 && (
+                          <div className="mt-3 border border-slate-800/80 rounded-xl overflow-hidden bg-slate-950/60 p-2.5 shadow-md">
+                            <div className="flex items-center justify-between mb-2 text-start">
+                              <div className="flex items-center gap-1.5 justify-start">
+                                <BarChart3 className="w-3.5 h-3.5 text-indigo-400" />
+                                <span className="text-[10px] font-semibold text-slate-400">
+                                  {isRTL ? "تحليل تمثيلي تفاعلي" : "Interactive AI Visualization"}
+                                </span>
+                              </div>
+                              <span className="text-[8px] bg-indigo-500/10 text-indigo-400 px-1.5 py-0.5 rounded font-mono uppercase">
+                                {msg.chartType || 'Bar'}
+                              </span>
+                            </div>
+                            <div className="h-[120px] w-full mt-1">
+                              <ResponsiveContainer width="100%" height="100%">
+                                {msg.chartType === 'line' ? (
+                                  <LineChart data={msg.chartData} margin={{ top: 5, right: 10, left: -25, bottom: 0 }}>
+                                    <XAxis dataKey="name" stroke="#64748b" fontSize={8} tickLine={false} axisLine={false} />
+                                    <YAxis stroke="#64748b" fontSize={8} tickLine={false} axisLine={false} />
+                                    <Tooltip
+                                      contentStyle={{ backgroundColor: '#020617', borderColor: '#1e293b', borderRadius: '8px', fontSize: '9px' }}
+                                      labelStyle={{ color: '#94a3b8' }}
+                                    />
+                                    <Line type="monotone" dataKey="value" stroke="#6366f1" strokeWidth={1.5} dot={{ r: 1.5 }} activeDot={{ r: 3 }} />
+                                  </LineChart>
+                                ) : msg.chartType === 'pie' ? (
+                                  <PieChart margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
+                                    <Pie
+                                      data={msg.chartData}
+                                      cx="50%"
+                                      cy="50%"
+                                      innerRadius={18}
+                                      outerRadius={34}
+                                      paddingAngle={2}
+                                      dataKey="value"
+                                    >
+                                      {msg.chartData.map((entry, index) => (
+                                        <Cell key={`cell-${index}`} fill={['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'][index % 5]} />
+                                      ))}
+                                    </Pie>
+                                    <Tooltip
+                                      contentStyle={{ backgroundColor: '#020617', borderColor: '#1e293b', borderRadius: '8px', fontSize: '9px' }}
+                                      itemStyle={{ fontSize: '9px' }}
+                                    />
+                                    <Legend verticalAlign="bottom" height={20} iconSize={6} wrapperStyle={{ fontSize: '7px', color: '#94a3b8' }} />
+                                  </PieChart>
+                                ) : (
+                                  <BarChart data={msg.chartData} margin={{ top: 5, right: 10, left: -25, bottom: 0 }}>
+                                    <XAxis dataKey="name" stroke="#64748b" fontSize={8} tickLine={false} axisLine={false} />
+                                    <YAxis stroke="#64748b" fontSize={8} tickLine={false} axisLine={false} />
+                                    <Tooltip
+                                      contentStyle={{ backgroundColor: '#020617', borderColor: '#1e293b', borderRadius: '8px', fontSize: '9px' }}
+                                      labelStyle={{ color: '#94a3b8' }}
+                                    />
+                                    <Bar dataKey="value" fill="#6366f1" radius={[3, 3, 0, 0]} />
+                                  </BarChart>
+                                )}
+                              </ResponsiveContainer>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Phase 4: CFO Drivers Strategic Justifications */}
+                        {Array.isArray(msg.executiveJustifications) && msg.executiveJustifications.length > 0 && (
+                          <div className="mt-3 bg-slate-950/40 border border-slate-800/60 rounded-xl p-2.5">
+                            <div className="text-[10px] font-bold text-slate-400 mb-1.5 flex items-center gap-1 justify-start">
+                              <Sparkles className="w-3 h-3 text-indigo-400" />
+                              <span>{isRTL ? "مسببات الأداء الاستراتيجية (CFO Drivers):" : "Strategic Performance Drivers:"}</span>
+                            </div>
+                            <div className="space-y-1">
+                              {msg.executiveJustifications.map((item, index) => (
+                                <div key={index} className="flex justify-between items-center text-[10px] text-start border-b border-slate-800/20 pb-1 last:border-b-0 last:pb-0">
+                                  <span className="text-slate-400 font-light truncate max-w-[200px]" title={item.factor}>{item.factor}</span>
+                                  <span className={`font-mono font-semibold ${item.impact?.startsWith?.('+') ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    {item.impact}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
                         {/* Render Table data if processed by backend */}
                         {msg.tableData && (
                           <div className="mt-3.5 border border-slate-800/80 rounded-xl overflow-hidden bg-slate-950/60 shadow-md">
@@ -556,6 +640,35 @@ export default function AIAssistant({
                                 </tbody>
                               </table>
                             </div>
+                          </div>
+                        )}
+
+                        {/* Phase 4: Confidence Score & Footnotes Citations */}
+                        {msg.confidenceScore !== undefined && (
+                          <div className="mt-3 pt-2 border-t border-slate-800/40 flex items-center justify-between text-[10px]">
+                            <div className="flex items-center gap-1.5 justify-start">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                              <span className="text-slate-400">{isRTL ? "درجة الموثوقية:" : "Advisory Confidence:"}</span>
+                              <span className={`font-mono font-bold ${msg.confidenceScore >= 90 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                                {msg.confidenceScore}%
+                              </span>
+                            </div>
+                            {Array.isArray(msg.citations) && msg.citations.length > 0 && (
+                              <span className="text-slate-500 font-light truncate max-w-[120px]" title={msg.citations.join(', ')}>
+                                {isRTL ? `${msg.citations.length} مصادر مدققة` : `${msg.citations.length} Verified Sources`}
+                              </span>
+                            )}
+                          </div>
+                        )}
+
+                        {Array.isArray(msg.citations) && msg.citations.length > 0 && (
+                          <div className="mt-1.5 flex flex-wrap gap-1 items-center justify-start text-[9px] text-slate-500 font-light">
+                            <span className="font-semibold">{isRTL ? "المصادر المرجعية:" : "Footnote Sources:"}</span>
+                            {msg.citations.map((cite, ci) => (
+                              <span key={ci} className="bg-slate-950/40 border border-slate-800/60 px-1.5 py-0.5 rounded text-slate-400 font-mono">
+                                [{ci + 1}] {cite}
+                              </span>
+                            ))}
                           </div>
                         )}
                       </div>

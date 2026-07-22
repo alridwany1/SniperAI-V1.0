@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Database, Plus, Trash2, Play, Code, Eye, AlertCircle, X, ChevronRight, CheckSquare, Square } from 'lucide-react';
 import { Tenant, ChatMessage } from '../types';
+import { safeFetchJson } from '../utils/apiUtils';
 
 interface SchemaField {
   column: string;
@@ -54,8 +55,7 @@ export default function VisualQueryBuilder({
       setLoadingSchema(true);
       setSchemaError(null);
       try {
-        const res = await fetch(`/api/tenants/${activeTenant.id}/schema`);
-        const data = await res.json();
+        const data = await safeFetchJson(`/api/tenants/${activeTenant.id}/schema`);
         if (data.success && data.schema && active) {
           setSchema(data.schema);
           const tables = Object.keys(data.schema);
@@ -183,7 +183,7 @@ export default function VisualQueryBuilder({
     setExecutionError(null);
 
     try {
-      const res = await fetch('/api/query/run', {
+      const data = await safeFetchJson('/api/query/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -199,7 +199,6 @@ export default function VisualQueryBuilder({
         })
       });
 
-      const data = await res.json();
       if (data.success) {
         // Construct standard AI model response payload featuring SQL query stats & beautiful custom tableData
         const durationText = language === 'ar' ? `خلال ${data.executionTimeMs} ملي ثانية` : `in ${data.executionTimeMs}ms`;

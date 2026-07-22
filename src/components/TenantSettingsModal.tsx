@@ -7,6 +7,7 @@ import {
   Activity, Wifi, Server, ShieldAlert, Cpu
 } from 'lucide-react';
 import { Tenant, SchemaMapping } from '../types';
+import { safeFetchJson } from '../utils/apiUtils';
 import ConfirmModal from './ConfirmModal';
 import SchemaExplorer from './SchemaExplorer';
 
@@ -87,11 +88,7 @@ export default function TenantSettingsModal({
     setIsLoadingDbSchema(true);
     setError('');
     try {
-      const response = await fetch(`/api/tenants/${tenant.id}/schema?lang=${language}`);
-      if (!response.ok) {
-        throw new Error(language === 'ar' ? 'فشل جلب مخطط قاعدة البيانات.' : 'Failed to fetch database schema.');
-      }
-      const data = await response.json();
+      const data = await safeFetchJson(`/api/tenants/${tenant.id}/schema?lang=${language}`);
       if (data.success) {
         setDbAnalysis(data.analysis);
         setDbMappingState(data.dbMapping);
@@ -109,7 +106,7 @@ export default function TenantSettingsModal({
     setIsSavingDbMapping(true);
     setError('');
     try {
-      const response = await fetch(`/api/tenants/${tenant.id}`, {
+      const updatedTenant = await safeFetchJson(`/api/tenants/${tenant.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -122,11 +119,6 @@ export default function TenantSettingsModal({
         }),
       });
 
-      if (!response.ok) {
-        throw new Error(language === 'ar' ? 'فشل حفظ مخطط وتوجيه قاعدة البيانات.' : 'Failed to save database mapping.');
-      }
-
-      const updatedTenant = await response.json();
       onUpdateSuccess(updatedTenant);
       setSuccess(true);
       setTimeout(() => {
@@ -163,15 +155,10 @@ export default function TenantSettingsModal({
     setError('');
     setWarning('');
     try {
-      const res = await fetch(`/api/tenants/${tenant.id}/diagnostics`, {
+      const data = await safeFetchJson(`/api/tenants/${tenant.id}/diagnostics`, {
         method: 'POST'
       });
-      if (res.ok) {
-        const data = await res.json();
-        setDiagnosticResult(data);
-      } else {
-        throw new Error(language === 'ar' ? 'فشل فحص الاتصال والتشخيص.' : 'Failed to run diagnostics scan.');
-      }
+      setDiagnosticResult(data);
     } catch (e: any) {
       console.error(e);
       setError(e.message || 'Diagnostic scan failed.');
@@ -185,13 +172,9 @@ export default function TenantSettingsModal({
     setError('');
     setWarning('');
     try {
-      const response = await fetch(`/api/tenants/${tenant?.id}/refresh-schema`, {
+      const data = await safeFetchJson(`/api/tenants/${tenant?.id}/refresh-schema`, {
         method: 'POST',
       });
-      if (!response.ok) {
-        throw new Error(language === 'ar' ? 'فشل تحديث المخطط.' : 'Failed to refresh schema.');
-      }
-      const data = await response.json();
       if (data.warning) {
         setWarning(data.warning);
       } else {
@@ -257,7 +240,7 @@ export default function TenantSettingsModal({
     }
 
     try {
-      const response = await fetch(`/api/tenants/${tenant.id}`, {
+      const updatedTenant = await safeFetchJson(`/api/tenants/${tenant.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -269,11 +252,6 @@ export default function TenantSettingsModal({
         }),
       });
 
-      if (!response.ok) {
-        throw new Error(language === 'ar' ? 'فشل تحديث إعدادات المستأجر.' : 'Failed to update tenant settings.');
-      }
-
-      const updatedTenant = await response.json();
       setSuccess(true);
       
       setTimeout(() => {
@@ -300,17 +278,12 @@ export default function TenantSettingsModal({
     setIsSubmitting(true);
     setError('');
     try {
-      const response = await fetch('/api/tenants/bulk-delete', {
+      const data = await safeFetchJson('/api/tenants/bulk-delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: [tenant.id] })
       });
 
-      if (!response.ok) {
-        throw new Error(language === 'ar' ? 'فشل حذف مساحة العمل.' : 'Failed to delete workspace.');
-      }
-
-      const data = await response.json();
       if (data.success) {
         setSuccess(true);
         setTimeout(() => {

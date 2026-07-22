@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
 import { useToast } from '../components/Toast';
 import { MetricSummary, ForecastRecord, CRMDeal, SyncHistoryEntry } from '../types';
+import { safeFetchJson } from '../utils/apiUtils';
 
 export const useDashboardData = () => {
   const { selectedTenantId, activeTenant, language } = useApp();
@@ -47,7 +48,7 @@ export const useDashboardData = () => {
   });
 
   const fetchMetrics = useCallback((campaign: string = 'All', product: string = 'All', start: string = '', end: string = '') => {
-    return fetch('/api/dashboard/metrics', {
+    return safeFetchJson('/api/dashboard/metrics', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -58,7 +59,6 @@ export const useDashboardData = () => {
         endDate: end
       })
     })
-      .then(res => res.json())
       .then(data => {
         if (data.summary) setSummary(data.summary);
         if (data.chartData) setChartData(data.chartData);
@@ -78,14 +78,13 @@ export const useDashboardData = () => {
 
   const fetchCRMDeals = useCallback(() => {
     setCrmLoading(true);
-    return fetch('/api/crm/deals', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tenantId: selectedTenantId })
-    })
-      .then(res => res.json())
+    return safeFetchJson(`/api/crm/deals/${selectedTenantId}`)
       .then(data => {
-        if (data.success && data.deals) {
+        if (Array.isArray(data)) {
+          setCrmDeals(data);
+        } else if (data?.success && Array.isArray(data?.deals)) {
+          setCrmDeals(data.deals);
+        } else if (data?.deals && Array.isArray(data.deals)) {
           setCrmDeals(data.deals);
         }
       })
@@ -98,10 +97,13 @@ export const useDashboardData = () => {
 
   const fetchSyncHistory = useCallback(() => {
     setSyncHistoryLoading(true);
-    return fetch(`/api/sync/history?tenantId=${selectedTenantId}`)
-      .then(res => res.json())
+    return safeFetchJson(`/api/crm/sync-history/${selectedTenantId}`)
       .then(data => {
-        if (data.success && data.history) {
+        if (Array.isArray(data)) {
+          setSyncHistory(data);
+        } else if (data?.success && Array.isArray(data?.history)) {
+          setSyncHistory(data.history);
+        } else if (data?.history && Array.isArray(data.history)) {
           setSyncHistory(data.history);
         }
       })

@@ -4,6 +4,7 @@ import { X, PlusCircle, CheckCircle, AlertCircle, Shield, Globe, Database, Key, 
 import { Tenant, SalesRecord, CRMDeal } from '../types';
 import SchemaExplorer from './SchemaExplorer';
 import { parseLocalFile } from '../utils/fileParser';
+import { safeFetchJson } from '../utils/apiUtils';
 
 interface RegisterTenantModalProps {
   isOpen: boolean;
@@ -155,11 +156,6 @@ export default function RegisterTenantModal({
         setConnectionMessage(language === 'ar' ? 'الرجاء إدخال مضيف الاتصال أو عنوان API أولاً' : 'Please input connection host or API URL first');
         return;
       }
-      if (!apiKey.trim()) {
-        setConnectionStatus('failed');
-        setConnectionMessage(language === 'ar' ? 'الرجاء إدخال مفتاح واجهة البرمجة أو كلمة المرور أولاً' : 'Please input API Key or password first');
-        return;
-      }
       if (!databaseName.trim()) {
         setConnectionStatus('failed');
         setConnectionMessage(language === 'ar' ? 'الرجاء إدخال اسم قاعدة البيانات أولاً' : 'Please input database name first');
@@ -174,7 +170,7 @@ export default function RegisterTenantModal({
     }
 
     try {
-      const response = await fetch('/api/tenants/test-connection', {
+      const data = await safeFetchJson('/api/tenants/test-connection', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -188,9 +184,7 @@ export default function RegisterTenantModal({
         }),
       });
 
-      const data = await response.json();
-
-      if (!response.ok || !data.success) {
+      if (!data.success) {
         setConnectionStatus('failed');
         setConnectionMessage(data.message || (language === 'ar' ? 'فشل اختبار الاتصال.' : 'Failed to test connection.'));
         setSchemaAnalysis(null);
@@ -226,7 +220,18 @@ export default function RegisterTenantModal({
       tenantLimit = Infinity;
     }
 
-    if (tenants.length >= tenantLimit) {
+    const emailKey = userEmail?.toLowerCase().trim();
+    const myCustomTenants = tenants.filter(t => {
+      if (t.id === 'apex-logistics') return false;
+      if (t.ownerEmail || t.createdBy) {
+        const owner = (t.ownerEmail || t.createdBy || '').toLowerCase().trim();
+        return owner === emailKey;
+      }
+      return false;
+    });
+    const customTenantsCount = myCustomTenants.length;
+
+    if (customTenantsCount >= tenantLimit) {
       setError(
         language === 'ar'
           ? `عذراً، لقد تجاوزت الحد الأقصى لعدد مصادر البيانات ومساحات العمل المسموح بها لباقتك الحالية (${tenantLimit === Infinity ? 'غير محدود' : tenantLimit} مصادر). يرجى ترقية باقة الاشتراك لزيادة حدودك.`
@@ -249,7 +254,7 @@ export default function RegisterTenantModal({
     }
 
     try {
-      const response = await fetch('/api/tenants', {
+      const newTenant = await safeFetchJson('/api/tenants', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -258,6 +263,8 @@ export default function RegisterTenantModal({
           description: description.trim(),
           accentColor,
           currency,
+          ownerEmail: userEmail,
+          createdBy: userEmail,
           dataSource: {
             provider,
             host: host.trim(),
@@ -272,11 +279,6 @@ export default function RegisterTenantModal({
         }),
       });
 
-      if (!response.ok) {
-        throw new Error(language === 'ar' ? 'فشل إعداد المستأجر الجديد.' : 'Failed to onboard new tenant.');
-      }
-
-      const newTenant = await response.json();
       setSuccess(true);
       setTimeout(() => {
         onOnboardSuccess(newTenant);

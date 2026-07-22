@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getFirestore } from 'firebase/firestore';
+import { initializeFirestore } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 import firebaseAppletConfig from '../../firebase-applet-config.json';
 
@@ -20,7 +20,9 @@ const databaseId = import.meta.env.VITE_FIRESTORE_DB_ID ||
   "ai-studio-sniperaiv21-8ee02038-98dc-42b7-9275-3cf55e6ffb8d";
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, databaseId);
+export const db = initializeFirestore(app, {
+  experimentalForceLongPolling: true,
+}, databaseId);
 export const auth = getAuth(app);
 
 export enum OperationType {
